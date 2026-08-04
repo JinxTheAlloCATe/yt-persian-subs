@@ -43,24 +43,25 @@
     </section>
 
     <section class="section">
-      <label class="label" for="model">Translation model</label>
-      <select id="model" class="input">
-        <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash — fast, cheap</option>
-        <option value="openai/gpt-4o-mini">GPT-4o mini — balanced</option>
-        <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — strong Persian</option>
-        <option value="deepseek/deepseek-chat">DeepSeek Chat — low cost</option>
-        <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-        <option value="__custom__">Custom model ID…</option>
-      </select>
+      <div class="row row--split">
+        <label class="label label--inline" for="model">Translation model</label>
+        <button type="button" id="refreshModels" class="btn btn--ghost btn--sm">
+          Refresh list
+        </button>
+      </div>
       <input
         type="text"
-        id="customModel"
+        id="model"
         class="input input--stacked"
+        list="modelList"
         placeholder="vendor/model-name"
         autocomplete="off"
         spellcheck="false"
-        hidden
       />
+      <datalist id="modelList"></datalist>
+      <p class="status" id="modelStatus" hidden></p>
+
+      <div class="picks" id="picks"></div>
     </section>
 
     <section class="section">

@@ -59,9 +59,10 @@ onto the `about:addons` page.
 2. Click the extension icon, paste the key, hit **Verify key**.
 3. Open any YouTube video with subtitles.
 
-Pick a model in the same popup. The default is Gemini 2.0 Flash — fast and
-cheap, which matters when a 40-minute video is a few hundred lines. Any
-OpenRouter model ID works via **Custom model ID**.
+Pick a model in the same popup. The default is Gemini 3.6 Flash — fast and
+cheap, which matters when a 40-minute video is a few hundred lines. The field
+accepts any OpenRouter model ID and autocompletes from their live catalogue,
+showing the price per million tokens and warning if an ID does not exist.
 
 ## How it works
 

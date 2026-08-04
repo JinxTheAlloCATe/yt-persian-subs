@@ -4,10 +4,19 @@
 const DEFAULTS = {
   enabled: true,
   apiKey: '',
-  model: 'google/gemini-2.0-flash-001',
+  model: 'google/gemini-3.6-flash',
   fontSize: 26,
   showOriginal: false,
 };
+
+// Shortcuts only — the field accepts any of OpenRouter's models, and the
+// datalist is filled from their live catalogue so it cannot go stale.
+const PICKS = [
+  { id: 'google/gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
+  { id: '~deepseek/deepseek-v4-flash-latest', label: 'DeepSeek V4 Flash' },
+  { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini' },
+  { id: 'deepseek/deepseek-chat-v3.1', label: 'DeepSeek V3.1' },
+];
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,7 +27,10 @@ const el = {
   verify: $('verify'),
   keyStatus: $('keyStatus'),
   model: $('model'),
-  customModel: $('customModel'),
+  modelList: $('modelList'),
+  modelStatus: $('modelStatus'),
+  refreshModels: $('refreshModels'),
+  picks: $('picks'),
   fontSize: $('fontSize'),
   fontSizeOut: $('fontSizeOut'),
   showOriginal: $('showOriginal'),
@@ -46,20 +58,80 @@ function setStatus(node, text, tone) {
   else delete node.dataset.tone;
 }
 
-/** Point the select at `id`, falling back to the custom field for unknown ids. */
-function showModel(id) {
-  const known = [...el.model.options].some(
-    (option) => option.value === id && option.value !== '__custom__'
+/* --------------------------------------------------------------- models */
+
+let catalogue = []; // [{ id, name, prompt, completion }]
+
+const price = (perMillion) =>
+  perMillion >= 1 ? `$${perMillion.toFixed(2)}` : `${(perMillion * 100).toFixed(2)}¢`;
+
+function renderPicks(selected) {
+  el.picks.replaceChildren(
+    ...PICKS.map(({ id, label }) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'pick';
+      button.textContent = label;
+      button.title = id;
+      button.setAttribute('aria-pressed', String(id === selected));
+      button.addEventListener('click', () => {
+        el.model.value = id;
+        save({ model: id });
+        renderPicks(id);
+        describeModel(id);
+      });
+      return button;
+    })
   );
-  if (known) {
-    el.model.value = id;
-    el.customModel.hidden = true;
-    el.customModel.value = '';
-  } else {
-    el.model.value = '__custom__';
-    el.customModel.hidden = false;
-    el.customModel.value = id;
+}
+
+/** Report whether the typed id exists, and what it costs. */
+function describeModel(id) {
+  if (!id) {
+    setStatus(el.modelStatus, 'No model set — translation will fail.', 'error');
+    return;
   }
+  if (!catalogue.length) {
+    setStatus(el.modelStatus, '');
+    return;
+  }
+
+  const model = catalogue.find((entry) => entry.id === id);
+  if (!model) {
+    // The exact cause of the "model not found" failures this replaces.
+    setStatus(
+      el.modelStatus,
+      'Not in OpenRouter’s catalogue — check the spelling.',
+      'error'
+    );
+    return;
+  }
+  setStatus(
+    el.modelStatus,
+    `${model.name} — ${price(model.prompt)}/M in, ${price(model.completion)}/M out`,
+    'ok'
+  );
+}
+
+async function loadModels({ refresh } = {}) {
+  if (refresh) setStatus(el.modelStatus, 'Fetching model list…');
+  const result = await send({ type: 'LIST_MODELS', refresh: Boolean(refresh) });
+
+  if (!result.ok) {
+    setStatus(el.modelStatus, result.error || 'Could not load models.', 'error');
+    return;
+  }
+
+  catalogue = result.models;
+  el.modelList.replaceChildren(
+    ...catalogue.map((model) => {
+      const option = document.createElement('option');
+      option.value = model.id;
+      option.label = `${model.name} — ${price(model.prompt)}/M`;
+      return option;
+    })
+  );
+  describeModel(el.model.value.trim());
 }
 
 /* ----------------------------------------------------------------- init */
@@ -71,7 +143,9 @@ chrome.storage.sync.get(DEFAULTS, (stored) => {
   el.fontSize.value = settings.fontSize;
   el.fontSizeOut.value = `${settings.fontSize}px`;
   el.showOriginal.checked = settings.showOriginal;
-  showModel(settings.model);
+  el.model.value = settings.model;
+  renderPicks(settings.model);
+  loadModels();
 });
 
 /* -------------------------------------------------------------- wiring */
@@ -99,20 +173,15 @@ el.reveal.addEventListener('click', () => {
   el.reveal.textContent = hidden ? 'Hide' : 'Show';
 });
 
-el.model.addEventListener('change', () => {
-  if (el.model.value === '__custom__') {
-    el.customModel.hidden = false;
-    el.customModel.focus();
-    return;
-  }
-  el.customModel.hidden = true;
-  save({ model: el.model.value });
-});
-
-el.customModel.addEventListener('change', () => {
-  const id = el.customModel.value.trim();
+// 'input' rather than 'change', so picking from the datalist saves immediately.
+el.model.addEventListener('input', () => {
+  const id = el.model.value.trim();
+  renderPicks(id);
+  describeModel(id);
   if (id) save({ model: id });
 });
+
+el.refreshModels.addEventListener('click', () => loadModels({ refresh: true }));
 
 el.verify.addEventListener('click', async () => {
   const apiKey = el.apiKey.value.trim();

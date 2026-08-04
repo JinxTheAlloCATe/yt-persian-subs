@@ -74,12 +74,11 @@ function buildContextBlock(context = {}) {
 
 /* ------------------------------------------------------------- settings */
 
+const DEFAULT_MODEL = 'google/gemini-3.6-flash';
+
 const settings = () =>
   new Promise((resolve) => {
-    chrome.storage.sync.get(
-      { apiKey: '', model: 'google/gemini-2.0-flash-001' },
-      resolve
-    );
+    chrome.storage.sync.get({ apiKey: '', model: DEFAULT_MODEL }, resolve);
   });
 
 const localGet = (keys) =>
@@ -280,6 +279,30 @@ async function callOpenRouter(apiKey, model, payloadLines, context) {
   return { ok: false, error: lastError };
 }
 
+// Persian and Arabic share this block; any real Persian line lands in it.
+const PERSIAN = /[؀-ۿ]/;
+
+/**
+ * Returns an error message when a batch came back not actually translated,
+ * or null when it looks fine. Weak models tend to fail in two ways: they
+ * return nothing parseable, or they echo the English straight back.
+ */
+function assessTranslation(lines) {
+  const filled = lines.filter((line) => line.trim().length);
+  if (!filled.length) {
+    return 'مدل هیچ ترجمه‌ای برنگرداند. مدل دیگری را امتحان کنید.';
+  }
+
+  const persian = filled.filter((line) => PERSIAN.test(line)).length;
+  if (persian / filled.length < 0.4) {
+    return 'مدل به فارسی ترجمه نکرد. مدل دیگری را امتحان کنید.';
+  }
+  if (filled.length / lines.length < 0.5) {
+    return 'مدل بیشتر خط‌ها را ترجمه نکرد. مدل دیگری را امتحان کنید.';
+  }
+  return null;
+}
+
 async function translateBatch({ videoId, batch, lines, context }) {
   const { apiKey, model } = await settings();
   if (!apiKey) {
@@ -297,8 +320,52 @@ async function translateBatch({ videoId, batch, lines, context }) {
   );
   if (!result.ok) return { ...result, videoId, batch };
 
+  // The overlay falls back to the source line when a translation is missing,
+  // which turns "the model ignored us" into subtitles that are silently still
+  // in English. Catch that here instead of letting it look like it worked.
+  const problem = assessTranslation(result.lines);
+  if (problem) return { ok: false, error: problem, videoId, batch };
+
   await cacheWrite(key, result.lines);
   return { ok: true, translations: result.lines, videoId, batch };
+}
+
+/*
+ * The catalogue moves — models get renamed and retired, and a hardcoded list
+ * goes stale silently, surfacing as a "not found" error mid-video. So fetch it
+ * live (this endpoint needs no key) and cache it for a day.
+ */
+const MODEL_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+async function listModels({ refresh } = {}) {
+  const { __models } = await localGet(['__models']);
+  if (!refresh && __models && Date.now() - __models.at < MODEL_CACHE_TTL) {
+    return { ok: true, models: __models.models, cached: true };
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/models`);
+    if (!res.ok) return { ok: false, error: `OpenRouter ${res.status}` };
+    const data = await res.json();
+
+    const models = (data?.data || [])
+      .map((model) => ({
+        id: model.id,
+        name: model.name || model.id,
+        // Pricing is per token; per-million is the unit people think in.
+        prompt: Number(model.pricing?.prompt || 0) * 1e6,
+        completion: Number(model.pricing?.completion || 0) * 1e6,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    if (!models.length) return { ok: false, error: 'Empty model list.' };
+    await localSet({ __models: { at: Date.now(), models } });
+    return { ok: true, models };
+  } catch (err) {
+    // Serve a stale list rather than nothing.
+    if (__models) return { ok: true, models: __models.models, stale: true };
+    return { ok: false, error: `Network error: ${err.message}` };
+  }
 }
 
 async function verifyKey(apiKey) {
@@ -335,8 +402,25 @@ async function clearCache() {
 const handlers = {
   TRANSLATE: translateBatch,
   VERIFY_KEY: (msg) => verifyKey(msg.apiKey),
+  LIST_MODELS: (msg) => listModels({ refresh: msg.refresh }),
   CLEAR_CACHE: clearCache,
 };
+
+/*
+ * Models that shipped as defaults but do not exist on OpenRouter. A stored
+ * setting survives an update, so without this the add-on keeps failing with
+ * "model not found" until the user notices and edits it by hand.
+ */
+const RETIRED_MODELS = new Set([
+  'google/gemini-2.0-flash-001',
+  'anthropic/claude-haiku-4-5',
+]);
+
+chrome.storage.sync.get({ model: DEFAULT_MODEL }, ({ model }) => {
+  if (RETIRED_MODELS.has(model)) {
+    chrome.storage.sync.set({ model: DEFAULT_MODEL });
+  }
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handler = handlers[message?.type];

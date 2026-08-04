@@ -25,7 +25,7 @@
   const DEFAULTS = {
     enabled: true,
     fontSize: 26,
-    model: 'google/gemini-2.0-flash-001',
+    model: 'google/gemini-3.6-flash',
     showOriginal: false,
   };
 
