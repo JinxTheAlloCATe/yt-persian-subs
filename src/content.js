@@ -123,38 +123,77 @@
    * sits in 'pending' forever, which looks exactly like a working add-on that
    * happens to show English. Always settle.
    */
-  function sendToBackground(message, timeout = 45000) {
-    if (!contextAlive()) {
+  /*
+   * A one-shot sendMessage does not keep a non-persistent background alive:
+   * Firefox can suspend the event page while it is awaiting OpenRouter, and
+   * the reply is then never delivered — the request simply vanishes, which is
+   * exactly what the console showed. An open port holds the event page alive
+   * for as long as it is connected, so requests go over one of those.
+   */
+  let port = null;
+  let sequence = 0;
+  const waiting = new Map();
+
+  function failAllWaiting(result) {
+    for (const settle of waiting.values()) settle(result);
+    waiting.clear();
+  }
+
+  function connect() {
+    if (port) return port;
+    if (!contextAlive()) return null;
+
+    try {
+      port = chrome.runtime.connect({ name: 'yps' });
+    } catch {
+      port = null;
+      return null;
+    }
+
+    port.onMessage.addListener((message) => {
+      const settle = waiting.get(message?.__id);
+      if (!settle) return;
+      waiting.delete(message.__id);
+      settle(message);
+    });
+
+    port.onDisconnect.addListener(() => {
+      // lastError here means the add-on went away rather than the page.
+      const orphaned = Boolean(chrome.runtime.lastError) || !contextAlive();
+      port = null;
+      failAllWaiting({
+        ok: false,
+        error: orphaned ? ORPHANED : 'ارتباط با پس‌زمینه قطع شد.',
+        orphaned,
+      });
+    });
+
+    return port;
+  }
+
+  function sendToBackground(message, timeout = 60000) {
+    const channel = connect();
+    if (!channel) {
       return Promise.resolve({ ok: false, error: ORPHANED, orphaned: true });
     }
+
+    const id = `r${++sequence}`;
     return new Promise((resolve) => {
-      let settled = false;
-      const done = (value) => {
-        if (settled) return;
-        settled = true;
+      const settle = (value) => {
         clearTimeout(timer);
         resolve(value);
       };
-      const timer = setTimeout(
-        () => done({ ok: false, error: 'پاسخی از پس‌زمینه نرسید.', timedOut: true }),
-        timeout
-      );
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        settle({ ok: false, error: 'پاسخی از پس‌زمینه نرسید.', timedOut: true });
+      }, timeout);
 
+      waiting.set(id, settle);
       try {
-        chrome.runtime.sendMessage(message, (response) => {
-          const failure = chrome.runtime.lastError?.message;
-          if (failure) {
-            // "Receiving end does not exist" here means this script outlived
-            // the add-on instance that injected it.
-            const orphaned = /receiving end|context invalidated/i.test(failure);
-            done({ ok: false, error: orphaned ? ORPHANED : failure, orphaned });
-            return;
-          }
-          done(response || { ok: false, error: 'no response' });
-        });
-      } catch (err) {
-        const orphaned = /context invalidated/i.test(String(err));
-        done({ ok: false, error: orphaned ? ORPHANED : String(err), orphaned });
+        channel.postMessage({ ...message, __id: id });
+      } catch {
+        waiting.delete(id);
+        settle({ ok: false, error: ORPHANED, orphaned: true });
       }
     });
   }

@@ -537,6 +537,38 @@ chrome.storage.sync.get({ model: DEFAULT_MODEL }, ({ model }) => {
   }
 });
 
+/*
+ * Content scripts talk over a port rather than one-shot messages: an open
+ * connection keeps this event page alive while a translation is in flight.
+ * Without it Firefox can suspend the page mid-request and the reply is lost.
+ */
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'yps') return;
+
+  port.onMessage.addListener(async (message) => {
+    const reply = (payload) => {
+      try {
+        port.postMessage({ ...payload, __id: message?.__id });
+      } catch {
+        // The page navigated away mid-request; nothing to deliver to.
+      }
+    };
+
+    const handler = handlers[message?.type];
+    if (!handler) {
+      reply({ ok: false, error: `unknown request: ${message?.type}` });
+      return;
+    }
+    try {
+      reply(await handler(message));
+    } catch (err) {
+      reply({ ok: false, error: String(err?.message || err) });
+    }
+  });
+});
+
+// The popup is an extension page and is not subject to the same suspension
+// problem, so it keeps using one-shot messages.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handler = handlers[message?.type];
   if (!handler) return false;
