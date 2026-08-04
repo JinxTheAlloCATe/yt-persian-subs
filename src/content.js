@@ -31,9 +31,26 @@
 
   let settings = { ...DEFAULTS };
   let session = null; // per-video state
+  /*
+   * Reloading the add-on injects a fresh content script into every page that
+   * is already open, without retiring the previous one. Each instance keeps
+   * its own session, its own animation loop and its own overlay, and they all
+   * queue translation requests against a background that runs two at a time.
+   * After a few reloads the queue is deep enough that the newest instance —
+   * the one whose overlay is actually on top — is the one whose requests time
+   * out, so the subtitles stay in English while cached batches still work.
+   *
+   * The newest instance claims this attribute; older ones notice and stop.
+   */
+  const OWNER_ATTR = 'data-yps-instance';
+  const INSTANCE = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  document.documentElement.setAttribute(OWNER_ATTR, INSTANCE);
+  const owns = () => document.documentElement.getAttribute(OWNER_ATTR) === INSTANCE;
+
   let overlay = null;
   let statusEl = null;
   let rafId = null;
+  let retired = false;
   // Index of the cue under the playhead; used to tell a batch the viewer is
   // waiting on from one being fetched ahead of time.
   let currentCueIndex = 0;
@@ -325,7 +342,7 @@
   }
 
   async function requestBatch(batch) {
-    if (!session || session.batches[batch] !== 'idle') return;
+    if (!owns() || !session || session.batches[batch] !== 'idle') return;
     const mine = session;
     mine.batches[batch] = 'pending';
 
@@ -361,8 +378,9 @@
     });
     log('batch', batch, 'replied', response?.ok ? 'ok' : response?.error);
 
-    // A navigation may have replaced the session while we awaited.
-    if (session !== mine) return;
+    // A navigation may have replaced the session while we awaited, or a newer
+    // content script may have taken over the page.
+    if (!owns() || session !== mine) return;
 
     if (!response.ok) {
       // A lost reply is transient — let the next tick pick it up again rather
@@ -414,6 +432,7 @@
   }
 
   function tick() {
+    if (!owns()) return retire();
     rafId = requestAnimationFrame(tick);
     if (!session || !settings.enabled) return;
     const video = videoEl();
@@ -439,6 +458,19 @@
   function stopLoop() {
     if (rafId != null) cancelAnimationFrame(rafId);
     rafId = null;
+  }
+
+  /** Stand down in favour of a newer content script in this page. */
+  function retire() {
+    if (retired) return;
+    retired = true;
+    stopLoop();
+    session = null;
+    playerEl()?.classList.remove('yps-active');
+    overlay?.remove();
+    overlay = null;
+    statusEl = null;
+    log('superseded by a newer content script — standing down');
   }
 
   /* -------------------------------------------------------------- session */
@@ -495,6 +527,7 @@
 
     for (let attempt = 0; ; attempt++) {
       const result = await loadCaptions(videoId);
+      if (!owns()) return retire();
       if (session !== mine) return; // navigated away mid-load
 
       if (result.cues) {
@@ -550,6 +583,7 @@
   let currentVideoId = null;
 
   async function sync() {
+    if (!owns()) return retire();
     const videoId = videoIdFromUrl();
 
     if (!videoId || !settings.enabled) {
