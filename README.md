@@ -13,14 +13,22 @@ Gecko ID so `storage.sync` and signing both work.
 ## What it does
 
 - Pulls the real subtitle track from the video (see [How it works](#how-it-works)).
-- Sends the cues to OpenRouter in batches of 35, with the surrounding lines as
-  context so pronouns and idioms survive the trip.
-- Paints the Persian text over the video, right-to-left, in Vazirmatn.
+- Rebuilds sentences first. Auto-generated cues are cut to a fixed width, so a
+  sentence normally ends partway through one; Persian puts the verb last, and a
+  fragment ending before its verb cannot be translated well in isolation.
+- Sends those sentences to OpenRouter in batches of 20, carrying the video's
+  title and the previous batch's translations so terminology stays consistent.
+- Paints the Persian over the video, right-to-left, in Vazirmatn — in
+  speech-sized pieces timed across each sentence rather than a wall of text.
+- Drops non-speech annotations like `[Music]` instead of translating them.
 - Caches every translated batch, so re-watching a video costs nothing.
 - Optionally keeps the original line visible underneath.
 
 Translations are keyed by video **and** model, so switching models re-translates
 rather than serving a stale result.
+
+The popup also sets subtitle size and colour, keeps an editable shortlist of
+models, and shows estimated spend so far.
 
 ## Install on Zen
 
@@ -40,17 +48,27 @@ Sign it as an *unlisted* add-on on addons.mozilla.org — Mozilla hands back a
 signed `.xpi` that installs for good, and unlisted means it is never published
 to the public directory.
 
+Get API credentials from
+[the AMO key page](https://addons.mozilla.org/developers/addon/api/key/) and
+keep them in a file outside the repo — never on the command line, where they
+land in shell history:
+
+```bash
+# ~/.amo-credentials, chmod 600
+WEB_EXT_API_KEY="user:00000000:000"
+WEB_EXT_API_SECRET="…"
+```
+
 ```bash
 npm install --global web-ext
 
-# API credentials: https://addons.mozilla.org/developers/addon/api/key/
-web-ext sign --channel=unlisted \
-  --api-key="$AMO_JWT_ISSUER" \
-  --api-secret="$AMO_JWT_SECRET"
+set -a; . ~/.amo-credentials; set +a
+web-ext sign --channel=unlisted
 ```
 
-The signed `.xpi` lands in `web-ext-artifacts/`. Open it with Zen, or drag it
-onto the `about:addons` page.
+Bump `version` in `manifest.json` first — AMO rejects a version it has already
+seen. The signed `.xpi` lands in `web-ext-artifacts/`; drag it onto
+`about:addons` in Zen.
 
 ## Setup
 
@@ -59,10 +77,23 @@ onto the `about:addons` page.
 2. Click the extension icon, paste the key, hit **Verify key**.
 3. Open any YouTube video with subtitles.
 
-Pick a model in the same popup. The default is Gemini 3.6 Flash — fast and
-cheap, which matters when a 40-minute video is a few hundred lines. The field
-accepts any OpenRouter model ID and autocompletes from their live catalogue,
-showing the price per million tokens and warning if an ID does not exist.
+Pick a model in the same popup. The field accepts any OpenRouter model ID and
+autocompletes from their live catalogue, showing the price per million tokens
+and warning if an ID does not exist. Remove any shortcut with its ×, or save
+whatever is in the field as a new one.
+
+**Model choice is what drives cost.** Output tokens dominate translation, and
+they vary by more than an order of magnitude:
+
+| Model | ~cost per 16-minute video |
+| --- | --- |
+| `~deepseek/deepseek-v4-flash-latest` (default) | $0.0025 |
+| `openai/gpt-5.6-luna` | $0.0062 |
+| `openai/gpt-4o-mini` | $0.0066 |
+| `google/gemini-3.6-flash` | $0.078 |
+
+The popup tracks tokens used and estimates what they cost, so this is visible
+as it accumulates rather than at the end of the month.
 
 ## How it works
 
