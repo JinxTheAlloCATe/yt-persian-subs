@@ -347,6 +347,23 @@
 
   /* ------------------------------------------------------------ captions */
 
+  /*
+   * Caption tracks annotate non-speech: [Music], [Applause], ♪, and the like.
+   * They are not dialogue, so they should not appear over the video — and
+   * sending them to a model means paying to translate a stage direction.
+   * Square brackets are always an annotation in YouTube's tracks; parentheses
+   * are only treated as one when they are the entire cue, since a parenthesis
+   * mid-sentence is usually speech.
+   */
+  const SOUND_MARKER = /[[【][^\]】]{0,40}[\]】]|[♪♫♬♩]+/g;
+  const WHOLE_PARENTHETICAL = /^[(（][^)）]{0,40}[)）]$/;
+
+  function stripSoundMarkers(text) {
+    const trimmed = String(text).trim();
+    if (WHOLE_PARENTHETICAL.test(trimmed)) return '';
+    return trimmed.replace(SOUND_MARKER, ' ').replace(/\s+/g, ' ').trim();
+  }
+
   /** Convert YouTube's json3 payload into flat cues with second-based timing. */
   function parseJson3(payload) {
     const events = payload?.events || [];
@@ -358,10 +375,13 @@
         .join('')
         .replace(/\s+/g, ' ')
         .trim();
-      if (!text || text === '\n') continue;
+      const speech = stripSoundMarkers(text);
+      // Nothing was said here — no point showing it, and no point paying to
+      // translate it either.
+      if (!speech) continue;
       const start = event.tStartMs / 1000;
       const dur = (event.dDurationMs ?? 4000) / 1000;
-      cues.push({ start, end: start + dur, text, translated: null });
+      cues.push({ start, end: start + dur, text: speech, translated: null });
     }
 
     // Auto-generated tracks emit rolling duplicates; keep the last write wins

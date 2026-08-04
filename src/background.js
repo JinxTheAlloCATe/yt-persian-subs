@@ -26,7 +26,7 @@ const SYSTEM_PROMPT = [
   '- Idiomatic, quick to read. Keep the speaker’s register.',
   '- Keep proper nouns, acronyms, numbers, units.',
   '- Stay consistent with any earlier translations shown.',
-  '- No commentary. Leave filler like [Music] unchanged.',
+  '- No commentary of your own.',
   'Reply with JSON only: {"lines":["…"]}',
 ].join('\n');
 
