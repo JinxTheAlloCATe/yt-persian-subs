@@ -342,9 +342,10 @@
     if (!response.ok) {
       mine.batches[batch] = 'error';
       setStatus(response.error || 'Translation failed', 'error');
-      log('batch failed', batch, response.error);
+      log('batch', batch, 'failed:', response.error, response.diag || '');
       return;
     }
+    log('batch', batch, 'ok', response.diag || '');
 
     const lines = response.translations || [];
     for (let i = 0; i < slice.length; i++) {

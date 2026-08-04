@@ -6,12 +6,19 @@ import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../src/background.js', import.meta.url), 'utf8');
 
 const persianConst = src.match(/^const PERSIAN = .+$/m)?.[0];
-const start = src.indexOf('function assessTranslation(lines) {');
-const end = src.indexOf('\n}', src.indexOf('return null;', start)) + 2;
 
-if (!persianConst || start < 0) throw new Error('could not extract assessTranslation');
+const lift = (marker, endMarker) => {
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error(`could not find ${marker}`);
+  return src.slice(start, src.indexOf(endMarker, start) + endMarker.length);
+};
+
+const statsFn = lift('function translationStats(lines) {', '\n}');
+const assessFn = lift('function assessTranslation(lines) {', '\n}');
+
+if (!persianConst) throw new Error('could not extract PERSIAN');
 const assess = new Function(
-  `${persianConst}\n${src.slice(start, end)}\nreturn assessTranslation;`
+  `${persianConst}\n${statsFn}\n${assessFn}\nreturn assessTranslation;`
 )();
 
 const fail = [];

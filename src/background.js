@@ -282,22 +282,31 @@ async function callOpenRouter(apiKey, model, payloadLines, context) {
 // Persian and Arabic share this block; any real Persian line lands in it.
 const PERSIAN = /[؀-ۿ]/;
 
+function translationStats(lines) {
+  const filled = lines.filter((line) => line.trim().length);
+  const persian = filled.filter((line) => PERSIAN.test(line)).length;
+  return {
+    total: lines.length,
+    filled: filled.length,
+    persian,
+    ratio: filled.length ? Number((persian / filled.length).toFixed(2)) : 0,
+  };
+}
+
 /**
- * Returns an error message when a batch came back not actually translated,
- * or null when it looks fine. Weak models tend to fail in two ways: they
- * return nothing parseable, or they echo the English straight back.
+ * Returns an error message when a batch is not actually translated, or null
+ * when it looks fine. Weak models tend to fail in two ways: they return
+ * nothing parseable, or they echo the English straight back.
  */
 function assessTranslation(lines) {
-  const filled = lines.filter((line) => line.trim().length);
-  if (!filled.length) {
+  const { total, filled, persian } = translationStats(lines);
+  if (!filled) {
     return 'مدل هیچ ترجمه‌ای برنگرداند. مدل دیگری را امتحان کنید.';
   }
-
-  const persian = filled.filter((line) => PERSIAN.test(line)).length;
-  if (persian / filled.length < 0.4) {
+  if (persian / filled < 0.4) {
     return 'مدل به فارسی ترجمه نکرد. مدل دیگری را امتحان کنید.';
   }
-  if (filled.length / lines.length < 0.5) {
+  if (filled / total < 0.5) {
     return 'مدل بیشتر خط‌ها را ترجمه نکرد. مدل دیگری را امتحان کنید.';
   }
   return null;
@@ -312,7 +321,20 @@ async function translateBatch({ videoId, batch, lines, context }) {
   const key = cacheKey(videoId, model, batch);
   const cached = await cacheRead(key);
   if (cached && cached.length === lines.length) {
-    return { ok: true, translations: cached, videoId, batch, cached: true };
+    // Builds before the Persian check wrote whatever came back, so a bad batch
+    // cached then would be served for that video forever. Validate on read too,
+    // and drop anything that no longer passes.
+    const stale = assessTranslation(cached);
+    if (!stale) {
+      return {
+        ok: true,
+        translations: cached,
+        videoId,
+        batch,
+        diag: { model, cached: true, ...translationStats(cached) },
+      };
+    }
+    await localRemove([key]);
   }
 
   const result = await withSlot(() =>
@@ -323,11 +345,26 @@ async function translateBatch({ videoId, batch, lines, context }) {
   // The overlay falls back to the source line when a translation is missing,
   // which turns "the model ignored us" into subtitles that are silently still
   // in English. Catch that here instead of letting it look like it worked.
+  const stats = translationStats(result.lines);
   const problem = assessTranslation(result.lines);
-  if (problem) return { ok: false, error: problem, videoId, batch };
+  if (problem) {
+    return {
+      ok: false,
+      error: problem,
+      videoId,
+      batch,
+      diag: { model, cached: false, ...stats },
+    };
+  }
 
   await cacheWrite(key, result.lines);
-  return { ok: true, translations: result.lines, videoId, batch };
+  return {
+    ok: true,
+    translations: result.lines,
+    videoId,
+    batch,
+    diag: { model, cached: false, ...stats },
+  };
 }
 
 /*
