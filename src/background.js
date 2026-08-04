@@ -339,15 +339,6 @@ async function translateBatch({ videoId, batch, lines, context }) {
   if (!apiKey) {
     return { ok: false, error: 'کلید OpenRouter تنظیم نشده است.' };
   }
-  if (!(await hasOpenRouterAccess())) {
-    return {
-      ok: false,
-      error: 'دسترسی به OpenRouter داده نشده. از پنل افزونه اجازه دهید.',
-      needsPermission: true,
-      videoId,
-      batch,
-    };
-  }
 
   const key = cacheKey(videoId, model, batch);
   const cached = await cacheRead(key);
@@ -438,13 +429,6 @@ async function listModels({ refresh } = {}) {
 
 async function verifyKey(apiKey) {
   if (!apiKey) return { ok: false, error: 'No key provided.' };
-  if (!(await hasOpenRouterAccess())) {
-    return {
-      ok: false,
-      error: 'Access to openrouter.ai not granted yet.',
-      needsPermission: true,
-    };
-  }
   try {
     const res = await fetch(`${API_BASE}/key`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -465,6 +449,60 @@ async function verifyKey(apiKey) {
   }
 }
 
+/*
+ * One real translation call, reported in full. Every failure mode so far has
+ * looked identical from the outside — English subtitles — so this exists to
+ * say which one it actually is, without reading a console.
+ */
+async function testTranslate() {
+  const { apiKey, model } = await settings();
+  if (!apiKey) return { ok: false, stage: 'key', error: 'No API key saved.' };
+
+  const sample = [
+    'You used to be able to sell buildings back in 2012.',
+    'This is the biggest update the game has had in years.',
+  ];
+
+  let response;
+  try {
+    response = await callOpenRouter(apiKey, model, sample, {
+      title: 'Test video',
+      author: 'Test channel',
+    });
+  } catch (err) {
+    response = { ok: false, error: String(err?.message || err) };
+  }
+
+  if (!response.ok) {
+    // A blocked cross-origin request surfaces as an opaque network failure,
+    // so name the likely cause rather than echoing "NetworkError".
+    const blocked = /network|fetch|failed/i.test(response.error || '');
+    const granted = await hasOpenRouterAccess();
+    return {
+      ok: false,
+      stage: 'request',
+      error: response.error,
+      model,
+      granted,
+      hint:
+        blocked && !granted
+          ? 'openrouter.ai access is not granted — allow it in about:addons → Permissions.'
+          : null,
+    };
+  }
+
+  const stats = translationStats(response.lines);
+  const problem = assessTranslation(response.lines);
+  return {
+    ok: !problem,
+    stage: problem ? 'output' : 'done',
+    model,
+    error: problem || null,
+    sample: response.lines[0] || '(empty)',
+    stats,
+  };
+}
+
 async function clearCache() {
   const { __index = [] } = await localGet(['__index']);
   if (__index.length) await localRemove(__index);
@@ -479,6 +517,7 @@ const handlers = {
   VERIFY_KEY: (msg) => verifyKey(msg.apiKey),
   LIST_MODELS: (msg) => listModels({ refresh: msg.refresh }),
   CHECK_ACCESS: async () => ({ ok: true, granted: await hasOpenRouterAccess() }),
+  TEST_TRANSLATE: testTranslate,
   CLEAR_CACHE: clearCache,
 };
 

@@ -38,6 +38,9 @@ const el = {
   cacheStatus: $('cacheStatus'),
   accessBanner: $('accessBanner'),
   grantAccess: $('grantAccess'),
+  testTranslate: $('testTranslate'),
+  testStatus: $('testStatus'),
+  testDetail: $('testDetail'),
 };
 
 const OPENROUTER_ORIGIN = 'https://openrouter.ai/*';
@@ -245,6 +248,33 @@ el.verify.addEventListener('click', async () => {
   }
   const suffix = detail.length ? ` — ${detail.join(' · ')}` : '';
   setStatus(el.keyStatus, `Key works${suffix}`, 'ok');
+});
+
+el.testTranslate.addEventListener('click', async () => {
+  el.testTranslate.disabled = true;
+  setStatus(el.testStatus, 'Translating two sample lines…');
+  setStatus(el.testDetail, '');
+
+  const result = await send({ type: 'TEST_TRANSLATE' });
+  el.testTranslate.disabled = false;
+
+  if (result.ok) {
+    setStatus(el.testStatus, 'Translation works.', 'ok');
+    setStatus(el.testDetail, result.sample || '');
+    el.testDetail.dir = 'rtl';
+    refreshAccess();
+    return;
+  }
+
+  // Name the stage that failed, so the fix is obvious from the popup alone.
+  const stage =
+    { key: 'No API key', request: 'Request failed', output: 'Model output rejected' }[
+      result.stage
+    ] || 'Failed';
+  setStatus(el.testStatus, `${stage}: ${result.error || 'unknown'}`, 'error');
+  setStatus(el.testDetail, result.hint || (result.model ? `Model: ${result.model}` : ''));
+  el.testDetail.dir = 'ltr';
+  refreshAccess();
 });
 
 el.clearCache.addEventListener('click', async () => {

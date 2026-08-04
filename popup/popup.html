@@ -20,8 +20,8 @@
 
     <section class="banner" id="accessBanner" hidden>
       <p class="banner__text">
-        Firefox has not granted this add-on access to <b>openrouter.ai</b> yet, so
-        translation cannot run.
+        Firefox may not have granted access to <b>openrouter.ai</b>. If translation
+        fails, allow it here or in <b>about:addons → Permissions</b>.
       </p>
       <button type="button" id="grantAccess" class="btn btn--primary btn--sm">
         Grant access
@@ -85,6 +85,14 @@
         <input type="checkbox" id="showOriginal" />
         <span>Show the original line underneath</span>
       </label>
+    </section>
+
+    <section class="section">
+      <button type="button" id="testTranslate" class="btn btn--primary">
+        Test translation
+      </button>
+      <p class="status" id="testStatus" hidden></p>
+      <p class="status" id="testDetail" hidden></p>
     </section>
 
     <footer class="foot">

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Persian Subtitles for YouTube",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Translates YouTube subtitles into Persian with an OpenRouter model and renders them over the video.",
   "browser_specific_settings": {
     "gecko": {
@@ -19,6 +19,9 @@
   ],
   "host_permissions": [
     "https://*.youtube.com/*",
+    "https://openrouter.ai/*"
+  ],
+  "optional_host_permissions": [
     "https://openrouter.ai/*"
   ],
   "action": {
