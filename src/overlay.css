@@ -1,6 +1,16 @@
 /* Subtitle overlay. Lives inside .html5-video-player so it follows the player
    into fullscreen and theater mode without extra bookkeeping. */
 
+/* While our overlay is showing cues, the player's own captions would sit on
+   top of them. Switching the track off in the player API is the primary fix;
+   this catches the cases where YouTube turns it back on by itself. The class
+   is only present while we actually have cues, so a failed load leaves the
+   native captions alone. */
+.html5-video-player.yps-active .ytp-caption-window-container,
+.html5-video-player.yps-active .caption-window {
+  display: none !important;
+}
+
 .yps-overlay {
   --yps-size: 26px;
   position: absolute;

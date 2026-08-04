@@ -162,6 +162,15 @@
 
   /* ------------------------------------------------------------- resolve */
 
+  /** We draw our own overlay, so the player's captions must not double it. */
+  function silenceNativeCaptions(player) {
+    try {
+      player.setOption('captions', 'track', {});
+    } catch {
+      /* the content script also hides them via CSS, so this is best-effort */
+    }
+  }
+
   async function resolveCaptions(player, wantVideoId) {
     // A captured URL is only good for the video it belongs to.
     const usable = () =>
@@ -169,10 +178,14 @@
         ? captured.url
         : null;
 
-    // Already have one: return it without touching the player, so repeated
-    // probes never flicker the native captions on and off.
+    // Already have one, so skip the track toggle and avoid flickering the
+    // native captions — but still switch them off, since having a URL usually
+    // means they are on right now and would double our overlay.
     const existing = usable();
-    if (existing) return { url: existing, track: null, tracklist: [], reused: true };
+    if (existing) {
+      silenceNativeCaptions(player);
+      return { url: existing, track: null, tracklist: [], reused: true };
+    }
 
     const tracklist = await captionTracklist(player);
     const track = preferredTrack(tracklist);
@@ -187,11 +200,7 @@
     } catch {
       /* the player rejected the track; fall back to whatever we captured */
     }
-    try {
-      player.setOption('captions', 'track', {}); // we render our own overlay
-    } catch {
-      /* leaving native captions on is survivable */
-    }
+    silenceNativeCaptions(player);
     return { url: url || usable(), track, tracklist };
   }
 

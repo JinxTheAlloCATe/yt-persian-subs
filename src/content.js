@@ -175,6 +175,7 @@
 
   function teardownOverlay() {
     stopLoop();
+    setNativeCaptionsHidden(false);
     overlay?.remove();
     overlay = null;
     statusEl = null;
@@ -368,6 +369,11 @@
     });
   }
 
+  /** Hides the player's own captions; see the .yps-active rule in overlay.css. */
+  function setNativeCaptionsHidden(hidden) {
+    playerEl()?.classList.toggle('yps-active', hidden);
+  }
+
   function installCues(target, result) {
     target.cues = result.cues;
     target.sourceLang = result.sourceLang;
@@ -375,6 +381,7 @@
       'idle'
     );
     setStatus('');
+    setNativeCaptionsHidden(true);
     startLoop();
     ensureBatchesAround(0);
     log(`loaded ${result.cues.length} cues (${result.sourceLang})`);
@@ -448,6 +455,8 @@
     session = null;
     paint(null);
     setStatus('');
+    // Give the player its captions back; we are no longer drawing any.
+    setNativeCaptionsHidden(false);
   }
 
   let currentVideoId = null;
