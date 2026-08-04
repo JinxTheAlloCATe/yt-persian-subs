@@ -40,7 +40,7 @@
   const videoEl = () => document.querySelector('video.html5-main-video');
 
   /** Round-trip a request through the MAIN-world hook. */
-  function askPage(type, timeout = 12000) {
+  function askPage(type, payload = {}, timeout = 12000) {
     return new Promise((resolve) => {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const done = (value) => {
@@ -56,7 +56,7 @@
       };
       const timer = setTimeout(() => done(null), timeout);
       window.addEventListener('message', onMessage);
-      window.postMessage({ channel: CHANNEL, type, id }, location.origin);
+      window.postMessage({ channel: CHANNEL, type, id, ...payload }, location.origin);
     });
   }
 
@@ -208,7 +208,7 @@
   }
 
   async function loadCaptions(videoId) {
-    const info = await askPage('REQ_CAPTIONS');
+    const info = await askPage('REQ_CAPTIONS', { videoId });
     if (!info) return { error: 'The player did not respond.' };
     log('caption probe', info.diag, info.url ? 'got url' : 'no url');
 
@@ -356,6 +356,26 @@
     });
   }
 
+  function installCues(target, result) {
+    target.cues = result.cues;
+    target.sourceLang = result.sourceLang;
+    target.batches = new Array(Math.ceil(result.cues.length / BATCH_SIZE)).fill(
+      'idle'
+    );
+    setStatus('');
+    startLoop();
+    ensureBatchesAround(0);
+    log(`loaded ${result.cues.length} cues (${result.sourceLang})`);
+  }
+
+  /*
+   * Captions are not reliably available the moment a video starts, and the
+   * viewer may switch them on at any point. So keep probing on a slow backoff
+   * instead of deciding once and giving up. A CAPTION_SEEN push from the page
+   * hook interrupts the wait, so enabling CC takes effect near-instantly.
+   */
+  const RETRY_DELAYS = [1200, 2000, 3000, 5000, 8000, 12000, 20000];
+
   async function startSession(videoId) {
     session = { videoId, cues: [], batches: [], shownCue: null, shownText: null };
     const mine = session;
@@ -366,24 +386,49 @@
     if (!ensureOverlay()) return;
     setStatus('در حال آماده‌سازی زیرنویس…');
 
-    const result = await loadCaptions(videoId);
-    if (session !== mine) return; // navigated away mid-load
+    for (let attempt = 0; ; attempt++) {
+      const result = await loadCaptions(videoId);
+      if (session !== mine) return; // navigated away mid-load
 
-    if (result.error) {
-      setStatus(result.error, 'error');
-      log(result.error);
-      return;
+      if (result.cues) {
+        installCues(mine, result);
+        return;
+      }
+
+      const last = attempt >= RETRY_DELAYS.length;
+      log(`probe ${attempt + 1} failed: ${result.error}${last ? '' : ' — retrying'}`);
+
+      if (last) {
+        setStatus('زیرنویسی پیدا نشد. اگر ویدئو CC دارد، آن را روشن کنید.', 'error');
+        return;
+      }
+      setStatus('در جست‌وجوی زیرنویس…');
+      await waitBeforeRetry(RETRY_DELAYS[attempt], videoId);
+      if (session !== mine) return;
     }
+  }
 
-    session.cues = result.cues;
-    session.sourceLang = result.sourceLang;
-    session.batches = new Array(Math.ceil(result.cues.length / BATCH_SIZE)).fill(
-      'idle'
-    );
-    setStatus('');
-    startLoop();
-    ensureBatchesAround(0);
-    log(`loaded ${result.cues.length} cues (${result.sourceLang})`);
+  /**
+   * Wait out the backoff, but cut it short if the page hook reports a caption
+   * request for this video — that is the viewer switching CC on.
+   */
+  function waitBeforeRetry(ms, videoId) {
+    return new Promise((resolve) => {
+      const finish = () => {
+        window.removeEventListener('message', onMessage);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onMessage = (event) => {
+        if (event.source !== window) return;
+        const msg = event.data;
+        if (msg?.channel !== CHANNEL || msg.type !== 'CAPTION_SEEN') return;
+        if (msg.videoId && videoId && msg.videoId !== videoId) return;
+        finish();
+      };
+      const timer = setTimeout(finish, ms);
+      window.addEventListener('message', onMessage);
+    });
   }
 
   function endSession() {

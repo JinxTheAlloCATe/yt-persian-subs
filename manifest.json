@@ -1,18 +1,22 @@
 {
   "manifest_version": 3,
   "name": "Persian Subtitles for YouTube",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Translates YouTube subtitles into Persian with an OpenRouter model and renders them over the video.",
   "browser_specific_settings": {
     "gecko": {
       "id": "yt-persian-subs@jinxtheallocate",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["websiteContent"]
+        "required": [
+          "websiteContent"
+        ]
       }
     }
   },
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "https://*.youtube.com/*",
     "https://openrouter.ai/*"
@@ -34,28 +38,44 @@
     "128": "icons/icon128.png"
   },
   "background": {
-    "scripts": ["src/background.js"]
+    "scripts": [
+      "src/background.js"
+    ]
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["src/page-hook.js"],
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "src/page-hook.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start",
       "all_frames": false
     },
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["src/content.js"],
-      "css": ["src/overlay.css"],
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "css": [
+        "src/overlay.css"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["fonts/*.woff2"],
-      "matches": ["https://*.youtube.com/*"]
+      "resources": [
+        "fonts/*.woff2"
+      ],
+      "matches": [
+        "https://*.youtube.com/*"
+      ]
     }
   ]
 }

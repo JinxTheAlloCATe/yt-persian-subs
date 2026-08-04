@@ -1,23 +1,25 @@
 /*
  * page-hook.js — runs in the page's MAIN world.
  *
- * The caption URLs listed in ytInitialPlayerResponse are missing the `pot`
- * (proof-of-origin) token, so fetching them directly returns an empty 200.
- * Only YouTube's own player issues a request carrying a usable token.
+ * The caption URLs in ytInitialPlayerResponse are missing YouTube's `pot`
+ * (proof-of-origin) token, so requesting one directly returns an empty 200.
+ * Only the player's own request carries a usable token, so we watch for it.
  *
- * So we shadow fetch/XHR, watch for the player's own /api/timedtext request,
- * and keep the URL. To make that request happen on demand we briefly switch a
- * caption track on, grab the URL, then switch it back off — our overlay does
- * the rendering, so the native captions must not stay visible.
+ * Three ways in, because any one of them can miss:
+ *   1. patched fetch / XHR    — catches requests made after we install
+ *   2. PerformanceObserver    — catches everything else, including requests
+ *                               issued before this script ran
+ *   3. toggling a track on    — forces a request when none has happened yet
  */
 (() => {
   const CHANNEL = 'yps';
   const TIMEDTEXT = '/api/timedtext';
 
-  let capturedUrl = null;
-  const pending = new Set();
+  // { url, videoId } — videoId guards against reusing the previous video's URL.
+  let captured = null;
+  const waiting = new Set();
 
-  /** Rewrite a captured caption URL to ask for the parseable json3 format. */
+  /** Rewrite a caption URL to ask for the parseable json3 format. */
   const asJson3 = (raw) => {
     try {
       const url = new URL(raw, location.origin);
@@ -29,13 +31,30 @@
     }
   };
 
-  const remember = (raw) => {
+  function remember(raw) {
     const url = asJson3(raw);
-    if (!url) return;
-    capturedUrl = url;
-    for (const resolve of pending) resolve(url);
-    pending.clear();
-  };
+    if (!url || url === captured?.url) return;
+
+    let videoId = null;
+    try {
+      videoId = new URL(url).searchParams.get('v');
+    } catch {
+      /* keep videoId null and treat the URL as unattributed */
+    }
+    captured = { url, videoId };
+
+    for (const resolve of waiting) resolve(url);
+    waiting.clear();
+
+    // Tell the content script straight away — it may be sitting on a video it
+    // could not resolve, and this is the signal that it can try again.
+    window.postMessage(
+      { channel: CHANNEL, type: 'CAPTION_SEEN', url, videoId },
+      location.origin
+    );
+  }
+
+  /* ----------------------------------------------------- request watching */
 
   const nativeFetch = window.fetch;
   window.fetch = function (resource, options) {
@@ -58,18 +77,33 @@
     return nativeOpen.apply(this, arguments);
   };
 
-  /** Resolve as soon as a caption URL is seen, or null once `ms` elapses. */
-  const nextCaptionUrl = (ms) =>
-    new Promise((resolve) => {
-      if (capturedUrl) return resolve(capturedUrl);
-      pending.add(resolve);
-      setTimeout(() => {
-        pending.delete(resolve);
-        resolve(capturedUrl);
-      }, ms);
+  // Resource timing sees requests the patches above cannot: ones issued before
+  // this script ran, or through a fetch reference captured ahead of us.
+  try {
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.name.includes(TIMEDTEXT)) remember(entry.name);
+      }
     });
+    observer.observe({ type: 'resource', buffered: true });
+  } catch {
+    /* older engines: the patches above still cover the common case */
+  }
+
+  /* ------------------------------------------------------------- helpers */
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** Resolve as soon as a caption URL turns up, or null once `ms` elapses. */
+  const nextCaptionUrl = (ms) =>
+    new Promise((resolve) => {
+      if (captured) return resolve(captured.url);
+      waiting.add(resolve);
+      setTimeout(() => {
+        waiting.delete(resolve);
+        resolve(captured?.url || null);
+      }, ms);
+    });
 
   const playerResponse = (player) => {
     try {
@@ -84,8 +118,8 @@
   };
 
   /**
-   * Prefer a human-authored track over auto-generated speech recognition, and
-   * English over anything else — models translate from it most reliably.
+   * Prefer a human-authored track over speech recognition, and English over
+   * anything else — models translate out of English most reliably.
    */
   const preferredTrack = (tracks) => {
     if (!tracks?.length) return null;
@@ -117,32 +151,42 @@
     return [];
   }
 
-  async function resolveCaptions(player) {
+  /* ------------------------------------------------------------- resolve */
+
+  async function resolveCaptions(player, wantVideoId) {
+    // A captured URL is only good for the video it belongs to.
+    const usable = () =>
+      captured && (!wantVideoId || !captured.videoId || captured.videoId === wantVideoId)
+        ? captured.url
+        : null;
+
+    // Already have one: return it without touching the player, so repeated
+    // probes never flicker the native captions on and off.
+    const existing = usable();
+    if (existing) return { url: existing, track: null, tracklist: [], reused: true };
+
     const tracklist = await captionTracklist(player);
     const track = preferredTrack(tracklist);
+    if (!track) return { url: usable(), track: null, tracklist };
 
-    // If captions are already on screen the player has fetched a track for us,
-    // so this URL is good even when the tracklist comes back empty.
-    const already = capturedUrl;
-    if (!track) return { url: already, track: null, tracklist };
-
-    // Clear it so nextCaptionUrl waits for *this* video's request rather than
-    // returning a URL left over from the previous one.
-    capturedUrl = null;
+    // Clear so nextCaptionUrl waits for this video's request, not a stale one.
+    captured = null;
     let url = null;
     try {
-      player.setOption('captions', 'track', track);
+      player.setOption('captions', 'track', track); // forces the player to fetch
       url = await nextCaptionUrl(6000);
     } catch {
       /* the player rejected the track; fall back to whatever we captured */
     }
     try {
-      player.setOption('captions', 'track', {});
+      player.setOption('captions', 'track', {}); // we render our own overlay
     } catch {
       /* leaving native captions on is survivable */
     }
-    return { url: url || capturedUrl || already, track, tracklist };
+    return { url: url || usable(), track, tracklist };
   }
+
+  /* ------------------------------------------------------------ protocol */
 
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
@@ -158,25 +202,27 @@
     const player = document.getElementById('movie_player');
     const response = playerResponse(player);
     const videoId =
+      msg.videoId ||
       response?.videoDetails?.videoId ||
       new URLSearchParams(location.search).get('v');
-    // Only a hint: this list is empty on plenty of videos that do have tracks,
-    // so it must never be the thing that decides there are no subtitles.
+
+    // Only a hint: this is empty on plenty of videos that do have tracks, so it
+    // must never be what decides there are no subtitles.
     const listed =
       response?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
 
     if (!player) {
       reply({
         videoId,
-        url: capturedUrl,
+        url: null,
         sourceLang: null,
-        hasCaptions: Boolean(capturedUrl),
+        hasCaptions: listed.length > 0,
         diag: { player: false, listed: listed.length, tracklist: 0 },
       });
       return;
     }
 
-    const { url, track, tracklist } = await resolveCaptions(player);
+    const { url, track, tracklist, reused } = await resolveCaptions(player, videoId);
     reply({
       videoId,
       url,
@@ -187,6 +233,7 @@
         listed: listed.length,
         tracklist: tracklist.length,
         captured: Boolean(url),
+        reused: Boolean(reused),
       },
     });
   });
