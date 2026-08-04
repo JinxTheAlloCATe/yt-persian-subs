@@ -257,16 +257,23 @@
     statusEl.style.display = text ? 'inline-block' : 'none';
   }
 
-  /** The piece of a translated sentence that belongs on screen at time `t`. */
-  function activePart(cue, t) {
-    if (!cue.parts?.length) return cue.translated;
-    for (const part of cue.parts) {
-      if (t < part.end) return part.text;
+  /**
+   * The piece that belongs on screen at time `t` — from the translation once
+   * it has landed, otherwise from the untranslated source.
+   */
+  function activeText(cue, t) {
+    const persian = Boolean(cue.parts?.length);
+    const pieces = persian ? cue.parts : cue.sourceParts;
+    if (!pieces?.length) {
+      return { text: cue.translated || cue.text, persian: Boolean(cue.translated) };
     }
-    return cue.parts[cue.parts.length - 1].text;
+    for (const piece of pieces) {
+      if (t < piece.end) return { text: piece.text, persian };
+    }
+    return { text: pieces[pieces.length - 1].text, persian };
   }
 
-  function paint(cue, persianText) {
+  function paint(cue, active) {
     if (!overlay) return;
     const line = overlay.querySelector('.yps-line');
     if (!line) return;
@@ -277,7 +284,11 @@
       return;
     }
 
-    const persian = persianText ?? cue.translated;
+    const persian = active?.persian ? active.text : null;
+    // Before a translation lands, show the paced source piece rather than the
+    // whole segment.
+    const source = active && !active.persian ? active.text : cue.text;
+
     const parts = [];
     if (persian) {
       const fa = document.createElement('div');
@@ -289,7 +300,7 @@
       const src = document.createElement('div');
       src.className = 'yps-src';
       src.dir = 'ltr';
-      src.textContent = cue.text;
+      src.textContent = source;
       parts.push(src);
     }
     line.replaceChildren(...parts);
@@ -344,7 +355,30 @@
    * pause long enough to imply a new thought, and on length so one runaway
    * segment cannot sit on screen forever. Timing spans the merged cues.
    */
-  function buildSegments(cues) {
+  /**
+   * Auto-generated cues are cut to a fixed width, so a sentence usually ends
+   * partway through one ("…and instant. Here are 10 features"). Split those
+   * apart first, sharing the cue's time by length, or whole sentences get
+   * glued together into a block far too long to read.
+   */
+  function splitCueSentences(cue) {
+    const pieces = cue.text.split(/(?<=[.!?…؟])\s+/).filter(Boolean);
+    if (pieces.length < 2) return [cue];
+
+    const total = pieces.reduce((sum, piece) => sum + piece.length, 0) || 1;
+    const span = Math.max(0, cue.end - cue.start);
+
+    let at = cue.start;
+    return pieces.map((text, i) => {
+      const last = i === pieces.length - 1;
+      const from = at;
+      at = last ? cue.end : at + (text.length / total) * span;
+      return { start: from, end: last ? cue.end : at, text, translated: null };
+    });
+  }
+
+  function buildSegments(rawCues) {
+    const cues = rawCues.flatMap(splitCueSentences);
     const segments = [];
     let current = null;
 
@@ -371,6 +405,12 @@
     }
 
     if (current) segments.push(current);
+
+    // Pace the source line too. Until a translation lands the overlay shows
+    // the original, and a whole segment at once is the same wall of text.
+    for (const segment of segments) {
+      segment.sourceParts = splitForDisplay(segment.text, segment.start, segment.end);
+    }
     return segments;
   }
 
@@ -584,13 +624,13 @@
     currentCueIndex = index;
     ensureBatchesAround(index);
 
-    const persian = cue ? activePart(cue, now) : null;
+    const active = cue ? activeText(cue, now) : null;
     // Covers all three reasons to repaint: the cue changed, the piece within
     // it changed, or a batch landed and filled in a cue already on screen.
-    const key = cue ? `${index}|${persian ?? ''}` : '';
+    const key = cue ? `${index}|${active?.persian ? 'fa' : 'en'}|${active?.text ?? ''}` : '';
     if (key !== session.shownKey) {
       session.shownKey = key;
-      paint(cue, persian);
+      paint(cue, active);
     }
   }
 

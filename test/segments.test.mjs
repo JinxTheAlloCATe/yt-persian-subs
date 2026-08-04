@@ -1,26 +1,37 @@
-// Pull buildSegments straight out of content.js so we test the shipped code.
+// Exercises the cue-to-sentence pipeline from content.js. Auto-generated
+// captions arrive as fixed-width fragments that cut across sentences, so this
+// covers both directions: fragments that must be joined, and cues holding a
+// sentence boundary partway through that must be split.
 import { readFileSync } from 'node:fs';
 
-const src = readFileSync(
-  new URL('../src/content.js', import.meta.url),
-  'utf8'
-);
+const src = readFileSync(new URL('../src/content.js', import.meta.url), 'utf8');
 
-const consts = [...src.matchAll(/^\s*const (SEGMENT_\w+) = ([\d.]+);/gm)]
+const consts = [...src.matchAll(/^\s*const ((?:SEGMENT|DISPLAY)_\w+) = ([\d.]+);/gm)]
   .map((m) => `const ${m[1]} = ${m[2]};`)
   .join('\n');
+if (!consts) throw new Error('could not extract the segment constants');
 
-const start = src.indexOf('  function buildSegments(cues) {');
-const end = src.indexOf('\n  }', src.indexOf('return segments;', start)) + 4;
-const fn = src.slice(start, end);
+/** Lift a function out of the source so the test covers what actually ships. */
+function lift(signature, tailMarker) {
+  const start = src.indexOf(signature);
+  if (start < 0) throw new Error(`could not find ${signature}`);
+  const end = src.indexOf('\n  }', src.indexOf(tailMarker, start)) + 4;
+  return src.slice(start, end);
+}
 
-if (!consts || start < 0) throw new Error('could not extract buildSegments');
-const buildSegments = new Function(`${consts}\n${fn}\nreturn buildSegments;`)();
+const api = new Function(`
+  ${consts}
+  ${lift('  function splitForDisplay(text, start, end) {', 'return chunks.map(')}
+  ${lift('  function splitCueSentences(cue) {', 'return pieces.map(')}
+  ${lift('  function buildSegments(rawCues) {', 'return segments;')}
+  return { buildSegments, splitCueSentences };
+`)();
 
 const cue = (start, end, text) => ({ start, end, text });
+const fail = [];
 
-// Realistic auto-generated caption fragments: fixed width, cutting across
-// sentence boundaries, which is the case that motivated segmentation.
+/* ------------------------------------------- joining split-up fragments */
+
 const asr = [
   cue(0.0, 2.1, 'You used to be able to sell buildings'),
   cue(2.1, 4.3, 'back in 2012, but now we can merge them.'),
@@ -29,31 +40,56 @@ const asr = [
   cue(20.0, 22.0, 'A totally separate thought after a long pause'),
 ];
 
-const segments = buildSegments(asr);
-console.log(`${asr.length} cues -> ${segments.length} segments\n`);
+const segments = api.buildSegments(asr);
+console.log(`${asr.length} fragments -> ${segments.length} sentences`);
+for (const s of segments) console.log(`  [${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
+
+if (segments.length !== 3) fail.push(`expected 3 sentences, got ${segments.length}`);
+if (!segments[0]?.text.endsWith('merge them.')) fail.push('sentence 1 not joined');
+if (segments[0]?.start !== 0.0 || segments[0]?.end !== 4.3) fail.push('bad span on sentence 1');
+if (!segments[1]?.text.startsWith('You had the weight')) fail.push('sentence 2 wrong');
+if (segments[2]?.start !== 20.0) fail.push('long pause did not split');
 for (const s of segments) {
-  console.log(`[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
+  if (!s.sourceParts?.length) fail.push('segment has no paced source pieces');
 }
 
-const fail = [];
-if (segments.length !== 3) fail.push(`expected 3 segments, got ${segments.length}`);
-if (!segments[0]?.text.endsWith('merge them.')) fail.push('sentence 1 not joined');
-if (segments[0]?.start !== 0.0 || segments[0]?.end !== 4.3) fail.push('bad span 1');
-if (!segments[1]?.text.startsWith('You had the weight')) fail.push('sentence 2 wrong');
-if (segments[2]?.start !== 20.0) fail.push('gap did not split');
+/* ------------------------- splitting a boundary that falls inside a cue */
 
-// A run with no punctuation at all must still be broken up by the length cap.
+// The reported case: two whole sentences shown on screen as one block.
+const midCue = cue(0, 6, 'but now they are free and instant. Here are 10 features from the old game');
+const split = api.splitCueSentences(midCue);
+console.log(`\nboundary inside a cue -> ${split.length} pieces`);
+for (const s of split) console.log(`  [${s.start.toFixed(2)}-${s.end.toFixed(2)}] ${s.text}`);
+
+if (split.length !== 2) fail.push(`expected 2 pieces, got ${split.length}`);
+if (!split[0]?.text.endsWith('instant.')) fail.push('first piece did not end at the full stop');
+if (!split[1]?.text.startsWith('Here are')) fail.push('second piece did not start the new sentence');
+if (split[0]?.start !== 0 || split[split.length - 1]?.end !== 6) fail.push('cue span not preserved');
+if (api.splitCueSentences(cue(0, 2, 'no boundary here')).length !== 1) {
+  fail.push('a cue without a boundary was split');
+}
+
+// End to end: the same text through buildSegments must not stay glued.
+const glued = api.buildSegments([
+  cue(0, 3, 'You had the weight of your troops training, but now they are free.'),
+  cue(3, 6, 'Here are 10 features that are now totally different.'),
+]);
+console.log(`\nglued pair -> ${glued.length} sentences`);
+if (glued.length !== 2) fail.push(`two sentences collapsed into ${glued.length}`);
+
+/* --------------------------------------------------------- length caps */
+
 const unpunctuated = Array.from({ length: 40 }, (_, i) =>
   cue(i * 2, i * 2 + 2, `word ${i} filler text here`)
 );
-const capped = buildSegments(unpunctuated);
+const capped = api.buildSegments(unpunctuated);
 const longest = Math.max(...capped.map((s) => s.text.length));
 const longestSpan = Math.max(...capped.map((s) => s.end - s.start));
 console.log(`\nunpunctuated: ${capped.length} segments, max ${longest} chars, max ${longestSpan}s`);
 if (longest > 240) fail.push(`char cap exceeded: ${longest}`);
 if (longestSpan > 14) fail.push(`duration cap exceeded: ${longestSpan}`);
 
-// No cue text may be lost or duplicated.
+// No cue text may be lost.
 const rejoined = segments.map((s) => s.text).join(' ');
 for (const c of asr) {
   if (!rejoined.includes(c.text)) fail.push(`lost cue text: ${c.text}`);
