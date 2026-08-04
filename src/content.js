@@ -34,6 +34,9 @@
   let overlay = null;
   let statusEl = null;
   let rafId = null;
+  // Index of the cue under the playhead; used to tell a batch the viewer is
+  // waiting on from one being fetched ahead of time.
+  let currentCueIndex = 0;
 
   /* ---------------------------------------------------------------- utils */
 
@@ -75,18 +78,36 @@
     });
   }
 
-  function sendToBackground(message) {
+  /*
+   * Firefox can suspend the event page while it is awaiting, and the reply is
+   * then lost — the callback simply never fires. Without a timeout the batch
+   * sits in 'pending' forever, which looks exactly like a working add-on that
+   * happens to show English. Always settle.
+   */
+  function sendToBackground(message, timeout = 45000) {
     return new Promise((resolve) => {
+      let settled = false;
+      const done = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(
+        () => done({ ok: false, error: 'پاسخی از پس‌زمینه نرسید.', timedOut: true }),
+        timeout
+      );
+
       try {
         chrome.runtime.sendMessage(message, (response) => {
           if (chrome.runtime.lastError) {
-            resolve({ ok: false, error: chrome.runtime.lastError.message });
+            done({ ok: false, error: chrome.runtime.lastError.message });
             return;
           }
-          resolve(response || { ok: false, error: 'no response' });
+          done(response || { ok: false, error: 'no response' });
         });
       } catch (err) {
-        resolve({ ok: false, error: String(err) });
+        done({ ok: false, error: String(err) });
       }
     });
   }
@@ -327,6 +348,9 @@
       .slice(start + slice.length, start + slice.length + 2)
       .map((cue) => cue.text);
 
+    log('batch', batch, 'requesting', slice.length, 'lines');
+    if (batch === batchIndexFor(currentCueIndex)) setStatus('در حال ترجمه…');
+
     const response = await sendToBackground({
       type: 'TRANSLATE',
       videoId: mine.videoId,
@@ -335,12 +359,15 @@
       lines: slice.map((cue) => cue.text),
       context: { ...(mine.meta || {}), before, after },
     });
+    log('batch', batch, 'replied', response?.ok ? 'ok' : response?.error);
 
     // A navigation may have replaced the session while we awaited.
     if (session !== mine) return;
 
     if (!response.ok) {
-      mine.batches[batch] = 'error';
+      // A lost reply is transient — let the next tick pick it up again rather
+      // than leaving the batch dead for the rest of the video.
+      mine.batches[batch] = response.timedOut ? 'idle' : 'error';
       setStatus(response.error || 'Translation failed', 'error');
       log('batch', batch, 'failed:', response.error, response.diag || '');
       return;
@@ -393,6 +420,7 @@
     if (!video) return;
 
     const { index, cue } = cueAt(session.cues, video.currentTime);
+    currentCueIndex = index;
     ensureBatchesAround(index);
 
     // Repaint when the cue changes, or when a batch lands and fills in the
