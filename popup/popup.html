@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Persian Subtitles for YouTube</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img class="head__icon" src="../icons/icon48.png" alt="" width="28" height="28" />
+      <div>
+        <h1 class="head__title">Persian Subtitles</h1>
+        <p class="head__sub">YouTube → فارسی</p>
+      </div>
+      <label class="switch" title="Enable on YouTube">
+        <input type="checkbox" id="enabled" />
+        <span class="switch__track"><span class="switch__thumb"></span></span>
+      </label>
+    </header>
+
+    <section class="section">
+      <label class="label" for="apiKey">OpenRouter API key</label>
+      <div class="row">
+        <input
+          type="password"
+          id="apiKey"
+          class="input"
+          placeholder="sk-or-v1-…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button type="button" id="reveal" class="btn btn--ghost" title="Show key">
+          Show
+        </button>
+      </div>
+      <div class="row row--split">
+        <button type="button" id="verify" class="btn btn--primary">Verify key</button>
+        <a class="link" href="https://openrouter.ai/keys" target="_blank" rel="noopener">
+          Get a free key ↗
+        </a>
+      </div>
+      <p class="status" id="keyStatus" hidden></p>
+    </section>
+
+    <section class="section">
+      <label class="label" for="model">Translation model</label>
+      <select id="model" class="input">
+        <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash — fast, cheap</option>
+        <option value="openai/gpt-4o-mini">GPT-4o mini — balanced</option>
+        <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — strong Persian</option>
+        <option value="deepseek/deepseek-chat">DeepSeek Chat — low cost</option>
+        <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+        <option value="__custom__">Custom model ID…</option>
+      </select>
+      <input
+        type="text"
+        id="customModel"
+        class="input input--stacked"
+        placeholder="vendor/model-name"
+        autocomplete="off"
+        spellcheck="false"
+        hidden
+      />
+    </section>
+
+    <section class="section">
+      <div class="row row--split">
+        <label class="label label--inline" for="fontSize">Subtitle size</label>
+        <output class="readout" id="fontSizeOut">26px</output>
+      </div>
+      <input type="range" id="fontSize" class="range" min="14" max="48" step="1" />
+
+      <label class="check">
+        <input type="checkbox" id="showOriginal" />
+        <span>Show the original line underneath</span>
+      </label>
+    </section>
+
+    <footer class="foot">
+      <button type="button" id="clearCache" class="btn btn--ghost btn--sm">
+        Clear translation cache
+      </button>
+      <span class="foot__hint" id="cacheStatus"></span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
