@@ -54,7 +54,8 @@
   font-family: 'Vazirmatn YPS', 'Vazirmatn', 'Tahoma', sans-serif;
   font-size: var(--yps-size);
   font-weight: 700;
-  color: #fff;
+  /* Set from the popup; falls back to white before settings load. */
+  color: var(--yps-color, #fff);
   direction: rtl;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }

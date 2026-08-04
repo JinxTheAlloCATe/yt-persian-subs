@@ -35,6 +35,7 @@
     fontSize: 26,
     model: 'google/gemini-3.6-flash',
     showOriginal: false,
+    textColor: '#ffffff',
   };
 
   let settings = { ...DEFAULTS };
@@ -119,12 +120,6 @@
     });
   }
 
-  /*
-   * Firefox can suspend the event page while it is awaiting, and the reply is
-   * then lost — the callback simply never fires. Without a timeout the batch
-   * sits in 'pending' forever, which looks exactly like a working add-on that
-   * happens to show English. Always settle.
-   */
   /*
    * A one-shot sendMessage does not keep a non-persistent background alive:
    * Firefox can suspend the event page while it is awaiting OpenRouter, and
@@ -274,13 +269,14 @@
     overlay.appendChild(line);
 
     player.appendChild(overlay);
-    applyFontSize();
+    applyAppearance();
     return overlay;
   }
 
-  function applyFontSize() {
+  function applyAppearance() {
     if (!overlay) return;
     overlay.style.setProperty('--yps-size', `${settings.fontSize}px`);
+    overlay.style.setProperty('--yps-color', settings.textColor);
   }
 
   function setStatus(text, tone = 'info') {
@@ -835,7 +831,7 @@
       settings[key] = newValue;
       if (key === 'enabled' || key === 'model') needsRestart = true;
     }
-    applyFontSize();
+    applyAppearance();
     if (needsRestart) {
       currentVideoId = null;
       endSession();

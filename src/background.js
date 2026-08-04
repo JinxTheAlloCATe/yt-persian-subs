@@ -81,28 +81,6 @@ function buildContextBlock(context = {}) {
 
 const DEFAULT_MODEL = 'google/gemini-3.6-flash';
 
-const OPENROUTER_ORIGIN = 'https://openrouter.ai/*';
-
-/*
- * Firefox treats manifest host_permissions as optional: unlike Chrome it does
- * not grant them at install, so the OpenRouter call is blocked until the user
- * says yes. Everything else keeps working — captions are fetched from the
- * content script on youtube.com, which is same-origin — so the add-on looks
- * fine right up until nothing gets translated.
- */
-function hasOpenRouterAccess() {
-  return new Promise((resolve) => {
-    try {
-      chrome.permissions.contains({ origins: [OPENROUTER_ORIGIN] }, (granted) => {
-        if (chrome.runtime.lastError) return resolve(true); // can't tell; try anyway
-        resolve(Boolean(granted));
-      });
-    } catch {
-      resolve(true);
-    }
-  });
-}
-
 const settings = () =>
   new Promise((resolve) => {
     chrome.storage.sync.get({ apiKey: '', model: DEFAULT_MODEL }, resolve);
@@ -495,60 +473,6 @@ async function verifyKey(apiKey) {
   }
 }
 
-/*
- * One real translation call, reported in full. Every failure mode so far has
- * looked identical from the outside — English subtitles — so this exists to
- * say which one it actually is, without reading a console.
- */
-async function testTranslate() {
-  const { apiKey, model } = await settings();
-  if (!apiKey) return { ok: false, stage: 'key', error: 'No API key saved.' };
-
-  const sample = [
-    'You used to be able to sell buildings back in 2012.',
-    'This is the biggest update the game has had in years.',
-  ];
-
-  let response;
-  try {
-    response = await callOpenRouter(apiKey, model, sample, {
-      title: 'Test video',
-      author: 'Test channel',
-    });
-  } catch (err) {
-    response = { ok: false, error: String(err?.message || err) };
-  }
-
-  if (!response.ok) {
-    // A blocked cross-origin request surfaces as an opaque network failure,
-    // so name the likely cause rather than echoing "NetworkError".
-    const blocked = /network|fetch|failed/i.test(response.error || '');
-    const granted = await hasOpenRouterAccess();
-    return {
-      ok: false,
-      stage: 'request',
-      error: response.error,
-      model,
-      granted,
-      hint:
-        blocked && !granted
-          ? 'openrouter.ai access is not granted — allow it in about:addons → Permissions.'
-          : null,
-    };
-  }
-
-  const stats = translationStats(response.lines);
-  const problem = assessTranslation(response.lines);
-  return {
-    ok: !problem,
-    stage: problem ? 'output' : 'done',
-    model,
-    error: problem || null,
-    sample: response.lines[0] || '(empty)',
-    stats,
-  };
-}
-
 async function clearCache() {
   const { __index = [] } = await localGet(['__index']);
   if (__index.length) await localRemove(__index);
@@ -565,8 +489,6 @@ const handlers = {
   TRANSLATE: translateBatch,
   VERIFY_KEY: (msg) => verifyKey(msg.apiKey),
   LIST_MODELS: (msg) => listModels({ refresh: msg.refresh }),
-  CHECK_ACCESS: async () => ({ ok: true, granted: await hasOpenRouterAccess() }),
-  TEST_TRANSLATE: testTranslate,
   CLEAR_CACHE: clearCache,
 };
 

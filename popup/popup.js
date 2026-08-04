@@ -7,7 +7,17 @@ const DEFAULTS = {
   model: 'google/gemini-3.6-flash',
   fontSize: 26,
   showOriginal: false,
+  textColor: '#ffffff',
 };
+
+// The colours subtitles conventionally use, for one-tap selection; the picker
+// beside them takes anything.
+const SWATCHES = [
+  { value: '#ffffff', label: 'White' },
+  { value: '#ffe14d', label: 'Yellow' },
+  { value: '#7ee8fa', label: 'Cyan' },
+  { value: '#9dff8a', label: 'Green' },
+];
 
 // Shortcuts only — the field accepts any of OpenRouter's models, and the
 // datalist is filled from their live catalogue so it cannot go stale.
@@ -36,14 +46,9 @@ const el = {
   showOriginal: $('showOriginal'),
   clearCache: $('clearCache'),
   cacheStatus: $('cacheStatus'),
-  accessBanner: $('accessBanner'),
-  grantAccess: $('grantAccess'),
-  testTranslate: $('testTranslate'),
-  testStatus: $('testStatus'),
-  testDetail: $('testDetail'),
+  textColor: $('textColor'),
+  swatches: $('swatches'),
 };
-
-const OPENROUTER_ORIGIN = 'https://openrouter.ai/*';
 
 const save = (patch) => chrome.storage.sync.set(patch);
 
@@ -65,33 +70,27 @@ function setStatus(node, text, tone) {
   else delete node.dataset.tone;
 }
 
-/* --------------------------------------------------------------- access */
+/* --------------------------------------------------------------- colour */
 
-/**
- * Firefox does not grant manifest host permissions at install, so the call to
- * OpenRouter is blocked until the user allows it. Nothing else in the add-on
- * needs that permission, which is why everything can look healthy while no
- * text is ever translated.
- */
-async function refreshAccess() {
-  const result = await send({ type: 'CHECK_ACCESS' });
-  const granted = result.ok ? result.granted : true;
-  el.accessBanner.hidden = granted;
-  return granted;
+function renderSwatches(selected) {
+  el.swatches.replaceChildren(
+    ...SWATCHES.map(({ value, label }) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'swatch';
+      button.style.background = value;
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', String(value === selected.toLowerCase()));
+      button.addEventListener('click', () => {
+        el.textColor.value = value;
+        save({ textColor: value });
+        renderSwatches(value);
+      });
+      return button;
+    })
+  );
 }
-
-el.grantAccess.addEventListener('click', () => {
-  // Must be called straight from the click, or Firefox rejects the request.
-  chrome.permissions.request({ origins: [OPENROUTER_ORIGIN] }, (granted) => {
-    el.accessBanner.hidden = Boolean(granted);
-    if (granted) {
-      setStatus(el.keyStatus, 'Access granted — translation can run now.', 'ok');
-      loadModels({ refresh: true });
-    } else {
-      setStatus(el.keyStatus, 'Access denied — translation will not work.', 'error');
-    }
-  });
-});
 
 /* --------------------------------------------------------------- models */
 
@@ -178,9 +177,10 @@ chrome.storage.sync.get(DEFAULTS, (stored) => {
   el.fontSize.value = settings.fontSize;
   el.fontSizeOut.value = `${settings.fontSize}px`;
   el.showOriginal.checked = settings.showOriginal;
+  el.textColor.value = settings.textColor;
+  renderSwatches(settings.textColor);
   el.model.value = settings.model;
   renderPicks(settings.model);
-  refreshAccess();
   loadModels();
 });
 
@@ -250,31 +250,11 @@ el.verify.addEventListener('click', async () => {
   setStatus(el.keyStatus, `Key works${suffix}`, 'ok');
 });
 
-el.testTranslate.addEventListener('click', async () => {
-  el.testTranslate.disabled = true;
-  setStatus(el.testStatus, 'Translating two sample lines…');
-  setStatus(el.testDetail, '');
-
-  const result = await send({ type: 'TEST_TRANSLATE' });
-  el.testTranslate.disabled = false;
-
-  if (result.ok) {
-    setStatus(el.testStatus, 'Translation works.', 'ok');
-    setStatus(el.testDetail, result.sample || '');
-    el.testDetail.dir = 'rtl';
-    refreshAccess();
-    return;
-  }
-
-  // Name the stage that failed, so the fix is obvious from the popup alone.
-  const stage =
-    { key: 'No API key', request: 'Request failed', output: 'Model output rejected' }[
-      result.stage
-    ] || 'Failed';
-  setStatus(el.testStatus, `${stage}: ${result.error || 'unknown'}`, 'error');
-  setStatus(el.testDetail, result.hint || (result.model ? `Model: ${result.model}` : ''));
-  el.testDetail.dir = 'ltr';
-  refreshAccess();
+// 'input' rather than 'change', so dragging in the picker updates live.
+el.textColor.addEventListener('input', () => {
+  const value = el.textColor.value;
+  save({ textColor: value });
+  renderSwatches(value);
 });
 
 el.clearCache.addEventListener('click', async () => {

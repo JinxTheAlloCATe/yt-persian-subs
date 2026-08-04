@@ -101,32 +101,6 @@ body {
   outline-offset: 2px;
 }
 
-/* Shown only when Firefox has withheld the openrouter.ai host permission. */
-.banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 16px;
-  background: rgba(94, 176, 255, 0.09);
-  border-bottom: 1px solid var(--line);
-}
-
-.banner__text {
-  flex: 1;
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text);
-}
-
-.banner__text b {
-  font-weight: 650;
-}
-
-.banner .btn {
-  flex: none;
-}
-
 /* ------------------------------------------------------------ sections */
 
 .section {
@@ -226,6 +200,52 @@ select.input {
 .pick[aria-pressed='true'] {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Subtitle colour: a few conventional choices, plus the full picker. */
+.row--gap {
+  margin-top: 12px;
+  gap: 8px;
+}
+
+.swatches {
+  display: flex;
+  gap: 5px;
+  margin-inline-start: auto;
+}
+
+.swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+.swatch:hover {
+  border-color: var(--muted);
+}
+
+.swatch[aria-pressed='true'] {
+  border-color: var(--accent);
+}
+
+.colour {
+  flex: none;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.colour::-moz-color-swatch {
+  border: none;
+  border-radius: 4px;
 }
 
 .check {
