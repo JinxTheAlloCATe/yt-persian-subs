@@ -76,6 +76,28 @@ function buildContextBlock(context = {}) {
 
 const DEFAULT_MODEL = 'google/gemini-3.6-flash';
 
+const OPENROUTER_ORIGIN = 'https://openrouter.ai/*';
+
+/*
+ * Firefox treats manifest host_permissions as optional: unlike Chrome it does
+ * not grant them at install, so the OpenRouter call is blocked until the user
+ * says yes. Everything else keeps working — captions are fetched from the
+ * content script on youtube.com, which is same-origin — so the add-on looks
+ * fine right up until nothing gets translated.
+ */
+function hasOpenRouterAccess() {
+  return new Promise((resolve) => {
+    try {
+      chrome.permissions.contains({ origins: [OPENROUTER_ORIGIN] }, (granted) => {
+        if (chrome.runtime.lastError) return resolve(true); // can't tell; try anyway
+        resolve(Boolean(granted));
+      });
+    } catch {
+      resolve(true);
+    }
+  });
+}
+
 const settings = () =>
   new Promise((resolve) => {
     chrome.storage.sync.get({ apiKey: '', model: DEFAULT_MODEL }, resolve);
@@ -317,6 +339,15 @@ async function translateBatch({ videoId, batch, lines, context }) {
   if (!apiKey) {
     return { ok: false, error: 'کلید OpenRouter تنظیم نشده است.' };
   }
+  if (!(await hasOpenRouterAccess())) {
+    return {
+      ok: false,
+      error: 'دسترسی به OpenRouter داده نشده. از پنل افزونه اجازه دهید.',
+      needsPermission: true,
+      videoId,
+      batch,
+    };
+  }
 
   const key = cacheKey(videoId, model, batch);
   const cached = await cacheRead(key);
@@ -407,6 +438,13 @@ async function listModels({ refresh } = {}) {
 
 async function verifyKey(apiKey) {
   if (!apiKey) return { ok: false, error: 'No key provided.' };
+  if (!(await hasOpenRouterAccess())) {
+    return {
+      ok: false,
+      error: 'Access to openrouter.ai not granted yet.',
+      needsPermission: true,
+    };
+  }
   try {
     const res = await fetch(`${API_BASE}/key`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -440,6 +478,7 @@ const handlers = {
   TRANSLATE: translateBatch,
   VERIFY_KEY: (msg) => verifyKey(msg.apiKey),
   LIST_MODELS: (msg) => listModels({ refresh: msg.refresh }),
+  CHECK_ACCESS: async () => ({ ok: true, granted: await hasOpenRouterAccess() }),
   CLEAR_CACHE: clearCache,
 };
 

@@ -101,6 +101,32 @@ body {
   outline-offset: 2px;
 }
 
+/* Shown only when Firefox has withheld the openrouter.ai host permission. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 16px;
+  background: rgba(94, 176, 255, 0.09);
+  border-bottom: 1px solid var(--line);
+}
+
+.banner__text {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.banner__text b {
+  font-weight: 650;
+}
+
+.banner .btn {
+  flex: none;
+}
+
 /* ------------------------------------------------------------ sections */
 
 .section {

@@ -14,8 +14,8 @@ const DEFAULTS = {
 const PICKS = [
   { id: 'google/gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
   { id: '~deepseek/deepseek-v4-flash-latest', label: 'DeepSeek V4 Flash' },
+  { id: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
   { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini' },
-  { id: 'deepseek/deepseek-chat-v3.1', label: 'DeepSeek V3.1' },
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -36,7 +36,11 @@ const el = {
   showOriginal: $('showOriginal'),
   clearCache: $('clearCache'),
   cacheStatus: $('cacheStatus'),
+  accessBanner: $('accessBanner'),
+  grantAccess: $('grantAccess'),
 };
+
+const OPENROUTER_ORIGIN = 'https://openrouter.ai/*';
 
 const save = (patch) => chrome.storage.sync.set(patch);
 
@@ -57,6 +61,34 @@ function setStatus(node, text, tone) {
   if (tone) node.dataset.tone = tone;
   else delete node.dataset.tone;
 }
+
+/* --------------------------------------------------------------- access */
+
+/**
+ * Firefox does not grant manifest host permissions at install, so the call to
+ * OpenRouter is blocked until the user allows it. Nothing else in the add-on
+ * needs that permission, which is why everything can look healthy while no
+ * text is ever translated.
+ */
+async function refreshAccess() {
+  const result = await send({ type: 'CHECK_ACCESS' });
+  const granted = result.ok ? result.granted : true;
+  el.accessBanner.hidden = granted;
+  return granted;
+}
+
+el.grantAccess.addEventListener('click', () => {
+  // Must be called straight from the click, or Firefox rejects the request.
+  chrome.permissions.request({ origins: [OPENROUTER_ORIGIN] }, (granted) => {
+    el.accessBanner.hidden = Boolean(granted);
+    if (granted) {
+      setStatus(el.keyStatus, 'Access granted — translation can run now.', 'ok');
+      loadModels({ refresh: true });
+    } else {
+      setStatus(el.keyStatus, 'Access denied — translation will not work.', 'error');
+    }
+  });
+});
 
 /* --------------------------------------------------------------- models */
 
@@ -145,6 +177,7 @@ chrome.storage.sync.get(DEFAULTS, (stored) => {
   el.showOriginal.checked = settings.showOriginal;
   el.model.value = settings.model;
   renderPicks(settings.model);
+  refreshAccess();
   loadModels();
 });
 
