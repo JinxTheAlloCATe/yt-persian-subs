@@ -14,6 +14,15 @@
 (() => {
   const CHANNEL = 'yps';
   const TIMEDTEXT = '/api/timedtext';
+  // Bumped whenever the message shape changes. Reloading the add-on leaves the
+  // previous hook installed in any page already open — it keeps answering, and
+  // answers faster than this one, so its replies must be identifiable and
+  // ignorable. Every message we send carries this.
+  const PROTO = 2;
+
+  // A hook of this version or newer is already live in this page.
+  if (window.__ypsHookProto >= PROTO) return;
+  window.__ypsHookProto = PROTO;
 
   // { url, videoId } — videoId guards against reusing the previous video's URL.
   let captured = null;
@@ -49,7 +58,7 @@
     // Tell the content script straight away — it may be sitting on a video it
     // could not resolve, and this is the signal that it can try again.
     window.postMessage(
-      { channel: CHANNEL, type: 'CAPTION_SEEN', url, videoId },
+      { channel: CHANNEL, proto: PROTO, type: 'CAPTION_SEEN', url, videoId },
       location.origin
     );
   }
@@ -195,7 +204,7 @@
 
     const reply = (payload) =>
       window.postMessage(
-        { channel: CHANNEL, type: 'RES_CAPTIONS', id: msg.id, ...payload },
+        { channel: CHANNEL, proto: PROTO, type: 'RES_CAPTIONS', id: msg.id, ...payload },
         location.origin
       );
 
@@ -238,5 +247,8 @@
     });
   });
 
-  window.postMessage({ channel: CHANNEL, type: 'HOOK_READY' }, location.origin);
+  window.postMessage(
+    { channel: CHANNEL, proto: PROTO, type: 'HOOK_READY' },
+    location.origin
+  );
 })();

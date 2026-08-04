@@ -7,6 +7,10 @@
  */
 (() => {
   const CHANNEL = 'yps';
+  // Must match PROTO in page-hook.js. A hook left behind by a previous version
+  // of the add-on keeps answering from pages that were already open, and it
+  // answers faster, so replies that do not carry this are dropped.
+  const PROTO = 2;
   const BATCH_SIZE = 35;
   // How far ahead of the playhead we keep translations warm, in batches.
   const PREFETCH = 1;
@@ -52,6 +56,10 @@
         if (event.source !== window) return;
         const msg = event.data;
         if (msg?.channel !== CHANNEL || msg.id !== id) return;
+        if (msg.proto !== PROTO) {
+          log('ignoring reply from a stale hook (proto', msg.proto, ')');
+          return;
+        }
         done(msg);
       };
       const timer = setTimeout(() => done(null), timeout);
@@ -209,7 +217,11 @@
 
   async function loadCaptions(videoId) {
     const info = await askPage('REQ_CAPTIONS', { videoId });
-    if (!info) return { error: 'The player did not respond.' };
+    if (!info) {
+      // Usually the page still holds a hook from a previous add-on version,
+      // whose replies we drop. A fresh tab gets a matching pair.
+      return { error: 'افزونه به‌روز شد — این برگه را ببندید و دوباره باز کنید.' };
+    }
     log('caption probe', info.diag, info.url ? 'got url' : 'no url');
 
     if (info.videoId && info.videoId !== videoId) {
@@ -423,6 +435,7 @@
         if (event.source !== window) return;
         const msg = event.data;
         if (msg?.channel !== CHANNEL || msg.type !== 'CAPTION_SEEN') return;
+        if (msg.proto !== PROTO) return;
         if (msg.videoId && videoId && msg.videoId !== videoId) return;
         finish();
       };
