@@ -11,9 +11,10 @@
   // of the add-on keeps answering from pages that were already open, and it
   // answers faster, so replies that do not carry this are dropped.
   const PROTO = 3;
-  // Smaller batches come back sooner, which matters more than request count:
-  // a slow model on a big batch can outlive the background's idle timer.
-  const BATCH_SIZE = 12;
+  // The prompt and video context are re-sent with every batch, so small
+  // batches multiply that overhead. 20 amortises it while still returning
+  // well inside the background's request deadline.
+  const BATCH_SIZE = 20;
 
   // Auto-generated captions arrive as fixed-width fragments that cut across
   // sentences. Persian puts the verb last, so a fragment ending before its
@@ -554,17 +555,14 @@
       return;
     }
 
-    // Lines either side of the batch, as context only. The preceding pairs
-    // carry terminology forward so a recurring term keeps one Persian
-    // rendering across batches; the following lines stop the batch's last
-    // sentence being translated as though the thought ended there.
+    // Two preceding pairs carry terminology forward so a recurring term keeps
+    // one Persian rendering across batches. Trailing context was dropped: it
+    // was paid for on every batch and those lines are translated anyway in
+    // the next one.
     const before = mine.cues
-      .slice(Math.max(0, start - 3), start)
+      .slice(Math.max(0, start - 2), start)
       .filter((cue) => cue.translated)
       .map((cue) => ({ source: cue.text, persian: cue.translated }));
-    const after = mine.cues
-      .slice(start + slice.length, start + slice.length + 2)
-      .map((cue) => cue.text);
 
     log('batch', batch, 'requesting', slice.length, 'lines');
     if (batch === batchIndexFor(currentCueIndex)) setStatus('در حال ترجمه…');
@@ -575,7 +573,7 @@
       batch,
       sourceLang: mine.sourceLang,
       lines: slice.map((cue) => cue.text),
-      context: { ...(mine.meta || {}), before, after },
+      context: { ...(mine.meta || {}), before },
     });
     log('batch', batch, 'replied', response?.ok ? 'ok' : response?.error);
 

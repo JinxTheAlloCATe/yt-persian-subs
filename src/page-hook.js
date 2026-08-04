@@ -231,8 +231,7 @@
     const meta = {
       title: details.title || null,
       author: details.author || null,
-      description: (details.shortDescription || '').slice(0, 1000) || null,
-      keywords: Array.isArray(details.keywords) ? details.keywords.slice(0, 12) : [],
+      description: (details.shortDescription || '').slice(0, 400) || null,
     };
 
     // Only a hint: this is empty on plenty of videos that do have tracks, so it

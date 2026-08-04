@@ -1,13 +1,24 @@
 /* Popup settings. Everything persists to storage.sync the moment it changes,
    so there is no save button to forget about. */
 
+// Shortcuts only — the field accepts any OpenRouter model, and this list is
+// editable, so it is just a starting point.
+const STARTER_PICKS = [
+  { id: '~deepseek/deepseek-v4-flash-latest', label: 'DeepSeek V4 Flash' },
+  { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini' },
+  { id: 'google/gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
+  { id: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+];
+
 const DEFAULTS = {
   enabled: true,
   apiKey: '',
-  model: 'google/gemini-3.6-flash',
+  // Output tokens dominate translation cost and this model's are far cheaper.
+  model: '~deepseek/deepseek-v4-flash-latest',
   fontSize: 26,
   showOriginal: false,
   textColor: '#ffffff',
+  picks: STARTER_PICKS,
 };
 
 // The colours subtitles conventionally use, for one-tap selection; the picker
@@ -19,14 +30,7 @@ const SWATCHES = [
   { value: '#9dff8a', label: 'Green' },
 ];
 
-// Shortcuts only — the field accepts any of OpenRouter's models, and the
-// datalist is filled from their live catalogue so it cannot go stale.
-const PICKS = [
-  { id: 'google/gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
-  { id: '~deepseek/deepseek-v4-flash-latest', label: 'DeepSeek V4 Flash' },
-  { id: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
-  { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini' },
-];
+let picks = STARTER_PICKS;
 
 const $ = (id) => document.getElementById(id);
 
@@ -48,6 +52,8 @@ const el = {
   cacheStatus: $('cacheStatus'),
   textColor: $('textColor'),
   swatches: $('swatches'),
+  usage: $('usage'),
+  resetUsage: $('resetUsage'),
 };
 
 const save = (patch) => chrome.storage.sync.set(patch);
@@ -69,6 +75,28 @@ function setStatus(node, text, tone) {
   if (tone) node.dataset.tone = tone;
   else delete node.dataset.tone;
 }
+
+/* ---------------------------------------------------------------- usage */
+
+async function refreshUsage() {
+  const result = await send({ type: 'USAGE_STATS' });
+  if (!result.ok || !result.calls) {
+    el.usage.textContent = 'Nothing translated yet.';
+    return;
+  }
+
+  const cost = result.cost >= 0.01 ? `$${result.cost.toFixed(2)}` : `$${result.cost.toFixed(4)}`;
+  const thousands = Math.round(result.tokens / 1000);
+  const since = result.since
+    ? ` since ${new Date(result.since).toLocaleDateString()}`
+    : '';
+  el.usage.textContent = `${cost} · ${thousands}k tokens · ${result.calls} requests${since}`;
+}
+
+el.resetUsage.addEventListener('click', async () => {
+  await send({ type: 'RESET_USAGE' });
+  refreshUsage();
+});
 
 /* --------------------------------------------------------------- colour */
 
@@ -100,23 +128,58 @@ const price = (perMillion) =>
   perMillion >= 1 ? `$${perMillion.toFixed(2)}` : `${(perMillion * 100).toFixed(2)}¢`;
 
 function renderPicks(selected) {
-  el.picks.replaceChildren(
-    ...PICKS.map(({ id, label }) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'pick';
-      button.textContent = label;
-      button.title = id;
-      button.setAttribute('aria-pressed', String(id === selected));
-      button.addEventListener('click', () => {
-        el.model.value = id;
-        save({ model: id });
-        renderPicks(id);
-        describeModel(id);
-      });
-      return button;
-    })
-  );
+  const chips = picks.map(({ id, label }) => {
+    const chip = document.createElement('span');
+    chip.className = 'pick';
+    chip.setAttribute('aria-pressed', String(id === selected));
+
+    const choose = document.createElement('button');
+    choose.type = 'button';
+    choose.className = 'pick__name';
+    choose.textContent = label || id;
+    choose.title = id;
+    choose.addEventListener('click', () => selectModel(id));
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'pick__remove';
+    remove.textContent = '×';
+    remove.title = `Remove ${label || id}`;
+    remove.setAttribute('aria-label', `Remove ${label || id}`);
+    remove.addEventListener('click', () => {
+      picks = picks.filter((pick) => pick.id !== id);
+      save({ picks });
+      renderPicks(el.model.value.trim());
+    });
+
+    chip.append(choose, remove);
+    return chip;
+  });
+
+  // Offer to keep whatever is in the field, when it is not already saved.
+  const current = el.model.value.trim();
+  if (current && !picks.some((pick) => pick.id === current)) {
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'pick pick--add';
+    add.textContent = '+ Save this model';
+    add.addEventListener('click', () => {
+      const name = catalogue.find((entry) => entry.id === current)?.name;
+      picks = [...picks, { id: current, label: name || current }];
+      save({ picks });
+      renderPicks(current);
+    });
+    chips.push(add);
+  }
+
+  el.picks.replaceChildren(...chips);
+}
+
+function selectModel(id) {
+  el.model.value = id;
+  save({ model: id });
+  renderPicks(id);
+  describeModel(id);
 }
 
 /** Report whether the typed id exists, and what it costs. */
@@ -179,9 +242,11 @@ chrome.storage.sync.get(DEFAULTS, (stored) => {
   el.showOriginal.checked = settings.showOriginal;
   el.textColor.value = settings.textColor;
   renderSwatches(settings.textColor);
+  picks = Array.isArray(settings.picks) ? settings.picks : STARTER_PICKS;
   el.model.value = settings.model;
   renderPicks(settings.model);
   loadModels();
+  refreshUsage();
 });
 
 /* -------------------------------------------------------------- wiring */

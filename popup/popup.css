@@ -181,25 +181,74 @@ select.input {
 }
 
 .pick {
-  padding: 4px 9px;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--panel);
-  color: var(--muted);
-  font: inherit;
   font-size: 11.5px;
-  cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease;
+  transition: border-color 120ms ease;
 }
 
 .pick:hover {
   border-color: var(--accent);
-  color: var(--text);
 }
 
 .pick[aria-pressed='true'] {
   border-color: var(--accent);
+}
+
+.pick[aria-pressed='true'] .pick__name {
   color: var(--accent);
+}
+
+.pick__name,
+.pick__remove {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pick__name {
+  padding: 4px 4px 4px 10px;
+}
+
+.pick__name:hover {
+  color: var(--text);
+}
+
+/* Deliberately quiet until hovered — removal should not be a stray click. */
+.pick__remove {
+  padding: 4px 8px 4px 4px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.45;
+}
+
+.pick__remove:hover {
+  color: var(--err);
+  opacity: 1;
+}
+
+.pick--add {
+  padding: 4px 10px;
+  color: var(--muted);
+  cursor: pointer;
+  border-style: dashed;
+}
+
+.pick--add:hover {
+  color: var(--accent);
+}
+
+.usage {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Subtitle colour: a few conventional choices, plus the full picker. */

@@ -16,22 +16,18 @@ const SLOT_BUDGET = 80000;
 const CACHE_LIMIT = 400;
 const RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
+// Every batch pays for this prompt again, so it is kept as short as it can be
+// while still pinning down the things models get wrong: line count, ordering,
+// register, and inventing commentary.
 const SYSTEM_PROMPT = [
-  'You are a professional subtitle translator working into Persian (Farsi).',
-  'You receive a numbered list of subtitle lines from one video, in order.',
-  'Translate every line into natural, contemporary Persian.',
+  'Translate video subtitles into natural spoken Persian (Farsi).',
   'Rules:',
-  '- Return exactly as many translations as you were given, in the same order.',
-  '- Translate each line on its own. Never merge, split, reorder, or drop lines.',
-  '- Keep it spoken and idiomatic, not word-for-word. Subtitles must read fast.',
-  '- Match the register of the speaker: casual speech stays casual in Persian.',
-  '- Preserve proper nouns, acronyms, numbers, and units.',
-  '- Keep domain terms consistent with how you already rendered them earlier.',
-  '- Leave game, software, and brand terms in their known Persian form, or in',
-  '  the original script when Persian speakers normally use it untranslated.',
-  '- Do not add commentary, transliteration, or quotation marks of your own.',
-  '- If a line is untranslatable filler (e.g. [Music]), return it unchanged.',
-  'Respond with JSON only: {"lines": ["…", "…"]}',
+  '- Return exactly as many lines as given, same order. Never merge or drop.',
+  '- Idiomatic, quick to read. Keep the speaker’s register.',
+  '- Keep proper nouns, acronyms, numbers, units.',
+  '- Stay consistent with any earlier translations shown.',
+  '- No commentary. Leave filler like [Music] unchanged.',
+  'Reply with JSON only: {"lines":["…"]}',
 ].join('\n');
 
 /**
@@ -40,46 +36,33 @@ const SYSTEM_PROMPT = [
  * speaker or topic information, so without this the model is translating
  * sentences with no idea what they are about.
  */
-function buildContextBlock(context = {}) {
-  const { title, author, description, keywords, before, after } = context;
+function buildContextBlock(context = {}, batch = 0) {
+  const { title, author, description, before } = context;
   const parts = [];
 
-  const about = [];
-  if (title) about.push(`Title: ${title}`);
-  if (author) about.push(`Channel: ${author}`);
-  if (keywords?.length) about.push(`Topics: ${keywords.join(', ')}`);
-  if (description) about.push(`Description: ${description.slice(0, 700)}`);
-  if (about.length) {
-    parts.push(
-      'The subtitles come from this video. Use it to resolve jargon and ' +
-        'ambiguous words — do not translate or mention it.\n' +
-        about.join('\n')
-    );
+  const about = [title, author].filter(Boolean).join(' — ');
+  if (about) parts.push(`Video: ${about}`);
+  // The description is only worth its tokens once. After the first batch the
+  // preceding translations carry the terminology forward instead.
+  if (batch === 0 && description) {
+    parts.push(`About: ${description.slice(0, 300)}`);
   }
 
   if (before?.length) {
     const pairs = before
-      .map((pair) => `EN: ${pair.source}\nFA: ${pair.persian}`)
+      .map((pair) => `${pair.source} → ${pair.persian}`)
       .join('\n');
-    parts.push(
-      'Immediately preceding lines, already translated. Stay consistent with ' +
-        'these choices. Do not translate them again.\n' + pairs
-    );
+    parts.push(`Already translated, keep consistent:\n${pairs}`);
   }
 
-  if (after?.length) {
-    parts.push(
-      'Lines that follow this batch, for context only. Do not translate them.\n' +
-        after.map((line) => `- ${line}`).join('\n')
-    );
-  }
-
-  return parts.join('\n\n');
+  return parts.join('\n');
 }
 
 /* ------------------------------------------------------------- settings */
 
-const DEFAULT_MODEL = 'google/gemini-3.6-flash';
+// Output tokens dominate translation cost, and this model's are ~40x cheaper
+// than Gemini Flash's for comparable Persian.
+const DEFAULT_MODEL = '~deepseek/deepseek-v4-flash-latest';
 
 const settings = () =>
   new Promise((resolve) => {
@@ -119,6 +102,55 @@ async function cacheWrite(key, lines) {
   if (evicted.length) await localRemove(evicted);
 
   await localSet({ [key]: lines, __index: index });
+}
+
+/* ---------------------------------------------------------------- usage */
+
+/*
+ * Token spend is invisible until the bill arrives, and a fault that silently
+ * retries can cost real money without translating anything. Keep a running
+ * tally so the popup can show it.
+ */
+async function recordUsage(model, usage) {
+  const prompt = Number(usage?.prompt_tokens || 0);
+  const completion = Number(usage?.completion_tokens || 0);
+  if (!prompt && !completion) return;
+
+  const { __usage = { since: Date.now(), models: {} } } = await localGet(['__usage']);
+  const entry = __usage.models[model] || { prompt: 0, completion: 0, calls: 0 };
+  entry.prompt += prompt;
+  entry.completion += completion;
+  entry.calls += 1;
+  __usage.models[model] = entry;
+  await localSet({ __usage });
+}
+
+async function usageStats() {
+  const [{ __usage }, { __models }] = await Promise.all([
+    localGet(['__usage']),
+    localGet(['__models']),
+  ]);
+  if (!__usage) return { ok: true, calls: 0, cost: 0, tokens: 0, since: null };
+
+  const pricing = new Map((__models?.models || []).map((m) => [m.id, m]));
+  let cost = 0;
+  let tokens = 0;
+  let calls = 0;
+
+  for (const [model, entry] of Object.entries(__usage.models || {})) {
+    const price = pricing.get(model);
+    tokens += entry.prompt + entry.completion;
+    calls += entry.calls;
+    if (price) {
+      cost += (entry.prompt * price.prompt + entry.completion * price.completion) / 1e6;
+    }
+  }
+  return { ok: true, calls, cost, tokens, since: __usage.since || null };
+}
+
+async function resetUsage() {
+  await localSet({ __usage: { since: Date.now(), models: {} } });
+  return { ok: true };
 }
 
 /* ------------------------------------------------------------ throttling */
@@ -224,12 +256,12 @@ function linesFromResponse(text, expected) {
 
 /* ------------------------------------------------------------ API calls */
 
-async function callOpenRouter(apiKey, model, payloadLines, context) {
+async function callOpenRouter(apiKey, model, payloadLines, context, batch = 0) {
   const numbered = payloadLines
     .map((line, i) => `${i + 1}. ${line}`)
     .join('\n');
 
-  const contextBlock = buildContextBlock(context);
+  const contextBlock = buildContextBlock(context, batch);
   const instruction =
     `Translate these ${payloadLines.length} subtitle lines into Persian. ` +
     `Return ${payloadLines.length} translations.`;
@@ -249,7 +281,7 @@ async function callOpenRouter(apiKey, model, payloadLines, context) {
   };
 
   let lastError = 'Request failed';
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt) {
       await new Promise((r) => setTimeout(r, 700 * 2 ** (attempt - 1)));
     }
@@ -307,6 +339,10 @@ async function callOpenRouter(apiKey, model, payloadLines, context) {
       lastError = 'Malformed response from OpenRouter.';
       continue;
     }
+
+    // Bill the tokens whether or not the content turns out usable — they were
+    // charged either way, and a run of unusable replies is worth seeing.
+    if (data?.usage) recordUsage(model, data.usage);
 
     const content = data?.choices?.[0]?.message?.content;
     if (!content) {
@@ -384,7 +420,7 @@ async function translateBatch({ videoId, batch, lines, context }) {
   }
 
   const result = await withSlot(() =>
-    callOpenRouter(apiKey, model, lines, context)
+    callOpenRouter(apiKey, model, lines, context, batch)
   );
   if (!result.ok) return { ...result, videoId, batch };
 
@@ -489,6 +525,8 @@ const handlers = {
   TRANSLATE: translateBatch,
   VERIFY_KEY: (msg) => verifyKey(msg.apiKey),
   LIST_MODELS: (msg) => listModels({ refresh: msg.refresh }),
+  USAGE_STATS: usageStats,
+  RESET_USAGE: resetUsage,
   CLEAR_CACHE: clearCache,
 };
 
