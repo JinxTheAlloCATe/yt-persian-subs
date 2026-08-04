@@ -18,13 +18,59 @@ const SYSTEM_PROMPT = [
   'Rules:',
   '- Return exactly as many translations as you were given, in the same order.',
   '- Translate each line on its own. Never merge, split, reorder, or drop lines.',
-  '- Use the surrounding lines only as context for meaning and pronouns.',
   '- Keep it spoken and idiomatic, not word-for-word. Subtitles must read fast.',
+  '- Match the register of the speaker: casual speech stays casual in Persian.',
   '- Preserve proper nouns, acronyms, numbers, and units.',
+  '- Keep domain terms consistent with how you already rendered them earlier.',
+  '- Leave game, software, and brand terms in their known Persian form, or in',
+  '  the original script when Persian speakers normally use it untranslated.',
   '- Do not add commentary, transliteration, or quotation marks of your own.',
   '- If a line is untranslatable filler (e.g. [Music]), return it unchanged.',
   'Respond with JSON only: {"lines": ["…", "…"]}',
 ].join('\n');
+
+/**
+ * Everything the model gets beyond the lines themselves: what the video is,
+ * and what sits either side of this batch. Auto-generated captions carry no
+ * speaker or topic information, so without this the model is translating
+ * sentences with no idea what they are about.
+ */
+function buildContextBlock(context = {}) {
+  const { title, author, description, keywords, before, after } = context;
+  const parts = [];
+
+  const about = [];
+  if (title) about.push(`Title: ${title}`);
+  if (author) about.push(`Channel: ${author}`);
+  if (keywords?.length) about.push(`Topics: ${keywords.join(', ')}`);
+  if (description) about.push(`Description: ${description.slice(0, 700)}`);
+  if (about.length) {
+    parts.push(
+      'The subtitles come from this video. Use it to resolve jargon and ' +
+        'ambiguous words — do not translate or mention it.\n' +
+        about.join('\n')
+    );
+  }
+
+  if (before?.length) {
+    const pairs = before
+      .map((pair) => `EN: ${pair.source}\nFA: ${pair.persian}`)
+      .join('\n');
+    parts.push(
+      'Immediately preceding lines, already translated. Stay consistent with ' +
+        'these choices. Do not translate them again.\n' + pairs
+    );
+  }
+
+  if (after?.length) {
+    parts.push(
+      'Lines that follow this batch, for context only. Do not translate them.\n' +
+        after.map((line) => `- ${line}`).join('\n')
+    );
+  }
+
+  return parts.join('\n\n');
+}
 
 /* ------------------------------------------------------------- settings */
 
@@ -47,7 +93,12 @@ const localRemove = (keys) =>
 
 /* ---------------------------------------------------------------- cache */
 
-const cacheKey = (videoId, model, batch) => `tr:${videoId}:${model}:${batch}`;
+// Bump when segmentation or the prompt changes: cached output from an older
+// scheme is not interchangeable with what we would produce now.
+const CACHE_SCHEMA = 2;
+
+const cacheKey = (videoId, model, batch) =>
+  `tr:${CACHE_SCHEMA}:${videoId}:${model}:${batch}`;
 
 async function cacheRead(key) {
   const store = await localGet([key]);
@@ -152,10 +203,15 @@ function linesFromResponse(text, expected) {
 
 /* ------------------------------------------------------------ API calls */
 
-async function callOpenRouter(apiKey, model, payloadLines) {
+async function callOpenRouter(apiKey, model, payloadLines, context) {
   const numbered = payloadLines
     .map((line, i) => `${i + 1}. ${line}`)
     .join('\n');
+
+  const contextBlock = buildContextBlock(context);
+  const instruction =
+    `Translate these ${payloadLines.length} subtitle lines into Persian. ` +
+    `Return ${payloadLines.length} translations.`;
 
   const body = {
     model,
@@ -164,7 +220,9 @@ async function callOpenRouter(apiKey, model, payloadLines) {
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `Translate these ${payloadLines.length} subtitle lines into Persian.\n\n${numbered}`,
+        content: contextBlock
+          ? `${contextBlock}\n\n---\n\n${instruction}\n\n${numbered}`
+          : `${instruction}\n\n${numbered}`,
       },
     ],
   };
@@ -222,7 +280,7 @@ async function callOpenRouter(apiKey, model, payloadLines) {
   return { ok: false, error: lastError };
 }
 
-async function translateBatch({ videoId, batch, lines }) {
+async function translateBatch({ videoId, batch, lines, context }) {
   const { apiKey, model } = await settings();
   if (!apiKey) {
     return { ok: false, error: 'کلید OpenRouter تنظیم نشده است.' };
@@ -234,7 +292,9 @@ async function translateBatch({ videoId, batch, lines }) {
     return { ok: true, translations: cached, videoId, batch, cached: true };
   }
 
-  const result = await withSlot(() => callOpenRouter(apiKey, model, lines));
+  const result = await withSlot(() =>
+    callOpenRouter(apiKey, model, lines, context)
+  );
   if (!result.ok) return { ...result, videoId, batch };
 
   await cacheWrite(key, result.lines);

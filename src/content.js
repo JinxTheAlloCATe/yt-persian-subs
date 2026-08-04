@@ -10,8 +10,15 @@
   // Must match PROTO in page-hook.js. A hook left behind by a previous version
   // of the add-on keeps answering from pages that were already open, and it
   // answers faster, so replies that do not carry this are dropped.
-  const PROTO = 2;
-  const BATCH_SIZE = 35;
+  const PROTO = 3;
+  const BATCH_SIZE = 25;
+
+  // Auto-generated captions arrive as fixed-width fragments that cut across
+  // sentences. Persian puts the verb last, so a fragment ending before its
+  // verb cannot be translated well in isolation — we rebuild sentences first.
+  const SEGMENT_MAX_CHARS = 240;
+  const SEGMENT_MAX_SECONDS = 14;
+  const SEGMENT_GAP = 1.6;
   // How far ahead of the playhead we keep translations warm, in batches.
   const PREFETCH = 1;
 
@@ -216,6 +223,41 @@
     return deduped;
   }
 
+  /**
+   * Join consecutive cues back into sentences. Breaks on end punctuation, on a
+   * pause long enough to imply a new thought, and on length so one runaway
+   * segment cannot sit on screen forever. Timing spans the merged cues.
+   */
+  function buildSegments(cues) {
+    const segments = [];
+    let current = null;
+
+    for (const cue of cues) {
+      if (!current) {
+        current = { start: cue.start, end: cue.end, text: cue.text, translated: null };
+        continue;
+      }
+
+      const merged = `${current.text} ${cue.text}`;
+      const endsSentence = /[.!?…؟](["')\]»]?)$/.test(current.text);
+      const tooLong =
+        merged.length > SEGMENT_MAX_CHARS ||
+        cue.end - current.start > SEGMENT_MAX_SECONDS;
+
+      if (endsSentence || tooLong || cue.start - current.end > SEGMENT_GAP) {
+        segments.push(current);
+        current = { start: cue.start, end: cue.end, text: cue.text, translated: null };
+        continue;
+      }
+
+      current.text = merged;
+      current.end = cue.end;
+    }
+
+    if (current) segments.push(current);
+    return segments;
+  }
+
   async function loadCaptions(videoId) {
     const info = await askPage('REQ_CAPTIONS', { videoId });
     if (!info) {
@@ -247,9 +289,12 @@
       return { error: `Subtitle fetch failed: ${err.message}` };
     }
 
-    const cues = parseJson3(payload);
-    if (!cues.length) return { error: 'The subtitle track was empty.' };
-    return { cues, sourceLang: info.sourceLang };
+    const raw = parseJson3(payload);
+    if (!raw.length) return { error: 'The subtitle track was empty.' };
+
+    const cues = buildSegments(raw);
+    log(`${raw.length} cues merged into ${cues.length} sentences`);
+    return { cues, sourceLang: info.sourceLang, meta: info.meta || null };
   }
 
   /* --------------------------------------------------------- translation */
@@ -270,12 +315,25 @@
       return;
     }
 
+    // Lines either side of the batch, as context only. The preceding pairs
+    // carry terminology forward so a recurring term keeps one Persian
+    // rendering across batches; the following lines stop the batch's last
+    // sentence being translated as though the thought ended there.
+    const before = mine.cues
+      .slice(Math.max(0, start - 3), start)
+      .filter((cue) => cue.translated)
+      .map((cue) => ({ source: cue.text, persian: cue.translated }));
+    const after = mine.cues
+      .slice(start + slice.length, start + slice.length + 2)
+      .map((cue) => cue.text);
+
     const response = await sendToBackground({
       type: 'TRANSLATE',
       videoId: mine.videoId,
       batch,
       sourceLang: mine.sourceLang,
       lines: slice.map((cue) => cue.text),
+      context: { ...(mine.meta || {}), before, after },
     });
 
     // A navigation may have replaced the session while we awaited.
@@ -377,6 +435,7 @@
   function installCues(target, result) {
     target.cues = result.cues;
     target.sourceLang = result.sourceLang;
+    target.meta = result.meta;
     target.batches = new Array(Math.ceil(result.cues.length / BATCH_SIZE)).fill(
       'idle'
     );

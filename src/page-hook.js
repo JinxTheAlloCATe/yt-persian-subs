@@ -18,7 +18,7 @@
   // previous hook installed in any page already open — it keeps answering, and
   // answers faster than this one, so its replies must be identifiable and
   // ignorable. Every message we send carries this.
-  const PROTO = 2;
+  const PROTO = 3;
 
   // A hook of this version or newer is already live in this page.
   if (window.__ypsHookProto >= PROTO) return;
@@ -224,6 +224,17 @@
       response?.videoDetails?.videoId ||
       new URLSearchParams(location.search).get('v');
 
+    // Subject-matter context for the translator. A gaming video's "troops" and
+    // "raid" mean something specific, and the model can only know that if we
+    // tell it what the video is.
+    const details = response?.videoDetails || {};
+    const meta = {
+      title: details.title || null,
+      author: details.author || null,
+      description: (details.shortDescription || '').slice(0, 1000) || null,
+      keywords: Array.isArray(details.keywords) ? details.keywords.slice(0, 12) : [],
+    };
+
     // Only a hint: this is empty on plenty of videos that do have tracks, so it
     // must never be what decides there are no subtitles.
     const listed =
@@ -234,6 +245,7 @@
         videoId,
         url: null,
         sourceLang: null,
+        meta,
         hasCaptions: listed.length > 0,
         diag: { player: false, listed: listed.length, tracklist: 0 },
       });
@@ -245,6 +257,7 @@
       videoId,
       url,
       sourceLang: track?.languageCode || null,
+      meta,
       hasCaptions: Boolean(url) || tracklist.length > 0 || listed.length > 0,
       diag: {
         player: true,
