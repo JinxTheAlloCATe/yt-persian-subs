@@ -513,6 +513,9 @@ async function clearCache() {
 /* ------------------------------------------------------------- routing */
 
 const handlers = {
+  // Answering keeps the event page's idle timer from expiring while a slow
+  // model is still working; see startHeartbeat in content.js.
+  PING: async () => ({ ok: true }),
   TRANSLATE: translateBatch,
   VERIFY_KEY: (msg) => verifyKey(msg.apiKey),
   LIST_MODELS: (msg) => listModels({ refresh: msg.refresh }),

@@ -11,7 +11,9 @@
   // of the add-on keeps answering from pages that were already open, and it
   // answers faster, so replies that do not carry this are dropped.
   const PROTO = 3;
-  const BATCH_SIZE = 25;
+  // Smaller batches come back sooner, which matters more than request count:
+  // a slow model on a big batch can outlive the background's idle timer.
+  const BATCH_SIZE = 12;
 
   // Auto-generated captions arrive as fixed-width fragments that cut across
   // sentences. Persian puts the verb last, so a fragment ending before its
@@ -132,11 +134,36 @@
    */
   let port = null;
   let sequence = 0;
+  let heartbeat = null;
   const waiting = new Map();
 
   function failAllWaiting(result) {
     for (const settle of waiting.values()) settle(result);
     waiting.clear();
+  }
+
+  /*
+   * Firefox terminates an idle event page, and a fetch it is awaiting does not
+   * count as activity — the port is severed and the reply is lost. Slow models
+   * lose whole batches this way while fast ones finish in time, which looks
+   * exactly like "this model cannot translate". Traffic on the port resets
+   * that idle timer, so keep some flowing while work is outstanding.
+   */
+  function startHeartbeat() {
+    if (heartbeat != null) return;
+    heartbeat = setInterval(() => {
+      if (!waiting.size) return stopHeartbeat();
+      try {
+        port?.postMessage({ type: 'PING', __id: `ping${++sequence}` });
+      } catch {
+        stopHeartbeat();
+      }
+    }, 12000);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeat != null) clearInterval(heartbeat);
+    heartbeat = null;
   }
 
   function connect() {
@@ -161,10 +188,13 @@
       // lastError here means the add-on went away rather than the page.
       const orphaned = Boolean(chrome.runtime.lastError) || !contextAlive();
       port = null;
+      stopHeartbeat();
       failAllWaiting({
         ok: false,
         error: orphaned ? ORPHANED : 'ارتباط با پس‌زمینه قطع شد.',
         orphaned,
+        // Recoverable: a fresh connect on the next attempt usually works.
+        disconnected: !orphaned,
       });
     });
 
@@ -189,6 +219,7 @@
       }, timeout);
 
       waiting.set(id, settle);
+      startHeartbeat();
       try {
         channel.postMessage({ ...message, __id: id });
       } catch {
@@ -562,9 +593,12 @@
       return;
     }
     if (!response.ok) {
-      // A lost reply is transient — let the next tick pick it up again rather
-      // than leaving the batch dead for the rest of the video.
-      mine.batches[batch] = response.timedOut ? 'idle' : 'error';
+      // A dropped connection or a lost reply is transient, so let the next
+      // tick try again — but cap it, or a persistent fault spins forever.
+      const transient = response.timedOut || response.disconnected;
+      mine.attempts[batch] = (mine.attempts[batch] || 0) + 1;
+      mine.batches[batch] =
+        transient && mine.attempts[batch] < 3 ? 'idle' : 'error';
       setStatus(response.error || 'Translation failed', 'error');
       log('batch', batch, 'failed:', response.error, response.diag || '');
       return;
@@ -699,7 +733,7 @@
   const RETRY_DELAYS = [1200, 2000, 3000, 5000, 8000, 12000, 20000];
 
   async function startSession(videoId) {
-    session = { videoId, cues: [], batches: [], shownKey: null };
+    session = { videoId, cues: [], batches: [], attempts: {}, shownKey: null };
     const mine = session;
 
     injectFontFace();
