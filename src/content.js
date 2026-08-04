@@ -19,6 +19,12 @@
   const SEGMENT_MAX_CHARS = 240;
   const SEGMENT_MAX_SECONDS = 14;
   const SEGMENT_GAP = 1.6;
+
+  // A whole translated sentence is accurate but reads as a wall of text. Show
+  // it in speech-sized pieces instead, timed across the sentence's own span,
+  // so the overlay keeps pace with the speaker.
+  const DISPLAY_MAX_CHARS = 52;
+  const DISPLAY_MIN_SECONDS = 0.7;
   // How far ahead of the playhead we keep translations warm, in batches.
   const PREFETCH = 1;
 
@@ -46,6 +52,22 @@
   const INSTANCE = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   document.documentElement.setAttribute(OWNER_ATTR, INSTANCE);
   const owns = () => document.documentElement.getAttribute(OWNER_ATTR) === INSTANCE;
+
+  /*
+   * Reloading the add-on invalidates the extension context of scripts already
+   * running in a page. They keep executing, but every message to the
+   * background fails with "receiving end does not exist" — so the overlay sits
+   * on "translating…" forever. Only a page reload can fix it.
+   */
+  const contextAlive = () => {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  };
+
+  const ORPHANED = 'افزونه به‌روز شد — صفحه را تازه کنید (F5).';
 
   let overlay = null;
   let statusEl = null;
@@ -102,6 +124,9 @@
    * happens to show English. Always settle.
    */
   function sendToBackground(message, timeout = 45000) {
+    if (!contextAlive()) {
+      return Promise.resolve({ ok: false, error: ORPHANED, orphaned: true });
+    }
     return new Promise((resolve) => {
       let settled = false;
       const done = (value) => {
@@ -117,14 +142,19 @@
 
       try {
         chrome.runtime.sendMessage(message, (response) => {
-          if (chrome.runtime.lastError) {
-            done({ ok: false, error: chrome.runtime.lastError.message });
+          const failure = chrome.runtime.lastError?.message;
+          if (failure) {
+            // "Receiving end does not exist" here means this script outlived
+            // the add-on instance that injected it.
+            const orphaned = /receiving end|context invalidated/i.test(failure);
+            done({ ok: false, error: orphaned ? ORPHANED : failure, orphaned });
             return;
           }
           done(response || { ok: false, error: 'no response' });
         });
       } catch (err) {
-        done({ ok: false, error: String(err) });
+        const orphaned = /context invalidated/i.test(String(err));
+        done({ ok: false, error: orphaned ? ORPHANED : String(err), orphaned });
       }
     });
   }
@@ -188,7 +218,16 @@
     statusEl.style.display = text ? 'inline-block' : 'none';
   }
 
-  function paint(cue) {
+  /** The piece of a translated sentence that belongs on screen at time `t`. */
+  function activePart(cue, t) {
+    if (!cue.parts?.length) return cue.translated;
+    for (const part of cue.parts) {
+      if (t < part.end) return part.text;
+    }
+    return cue.parts[cue.parts.length - 1].text;
+  }
+
+  function paint(cue, persianText) {
     if (!overlay) return;
     const line = overlay.querySelector('.yps-line');
     if (!line) return;
@@ -199,7 +238,7 @@
       return;
     }
 
-    const persian = cue.translated;
+    const persian = persianText ?? cue.translated;
     const parts = [];
     if (persian) {
       const fa = document.createElement('div');
@@ -296,6 +335,60 @@
     return segments;
   }
 
+  /**
+   * Break a translated sentence into display-sized pieces and spread them
+   * across the sentence's own time span, weighted by length so a long piece
+   * stays up longer than a short one. Breaks at punctuation where it can,
+   * otherwise at a word boundary — never mid-word.
+   */
+  function splitForDisplay(text, start, end) {
+    const words = String(text).trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+
+    const chunks = [];
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length > DISPLAY_MAX_CHARS && current) {
+        chunks.push(current);
+        current = word;
+      } else {
+        current = candidate;
+        // A clause boundary is a better place to break than a length limit.
+        if (/[،؛,.!?…؟:]$/.test(word) && current.length > DISPLAY_MAX_CHARS * 0.55) {
+          chunks.push(current);
+          current = '';
+        }
+      }
+    }
+    if (current) chunks.push(current);
+
+    // A greedy fill can leave a stray word or two at the end, which flashes up
+    // on its own and reads badly. Fold a runt back into the piece before it.
+    if (chunks.length > 1) {
+      const last = chunks[chunks.length - 1];
+      const previous = chunks[chunks.length - 2];
+      if (
+        last.length < DISPLAY_MAX_CHARS * 0.4 &&
+        previous.length + last.length + 1 <= DISPLAY_MAX_CHARS * 1.35
+      ) {
+        chunks.splice(chunks.length - 2, 2, `${previous} ${last}`);
+      }
+    }
+
+    const span = Math.max(DISPLAY_MIN_SECONDS, end - start);
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0) || 1;
+
+    let at = start;
+    return chunks.map((chunk, i) => {
+      const last = i === chunks.length - 1;
+      const slice = (chunk.length / total) * span;
+      const from = at;
+      at = last ? end : at + slice;
+      return { text: chunk, start: from, end: last ? end : at };
+    });
+  }
+
   async function loadCaptions(videoId) {
     const info = await askPage('REQ_CAPTIONS', { videoId });
     if (!info) {
@@ -382,6 +475,13 @@
     // content script may have taken over the page.
     if (!owns() || session !== mine) return;
 
+    if (response.orphaned) {
+      // Nothing here can recover; retrying only burns frames.
+      mine.batches[batch] = 'error';
+      setStatus(ORPHANED, 'error');
+      log('orphaned content script — a page reload is required');
+      return;
+    }
     if (!response.ok) {
       // A lost reply is transient — let the next tick pick it up again rather
       // than leaving the batch dead for the rest of the video.
@@ -394,7 +494,9 @@
 
     const lines = response.translations || [];
     for (let i = 0; i < slice.length; i++) {
-      if (lines[i]) slice[i].translated = lines[i];
+      if (!lines[i]) continue;
+      slice[i].translated = lines[i];
+      slice[i].parts = splitForDisplay(lines[i], slice[i].start, slice[i].end);
     }
     mine.batches[batch] = 'done';
     if (mine.batches.every((s) => s !== 'error')) setStatus('');
@@ -438,16 +540,18 @@
     const video = videoEl();
     if (!video) return;
 
-    const { index, cue } = cueAt(session.cues, video.currentTime);
+    const now = video.currentTime;
+    const { index, cue } = cueAt(session.cues, now);
     currentCueIndex = index;
     ensureBatchesAround(index);
 
-    // Repaint when the cue changes, or when a batch lands and fills in the
-    // translation for a cue that is already on screen.
-    if (cue !== session.shownCue || cue?.translated !== session.shownText) {
-      session.shownCue = cue;
-      session.shownText = cue?.translated ?? null;
-      paint(cue);
+    const persian = cue ? activePart(cue, now) : null;
+    // Covers all three reasons to repaint: the cue changed, the piece within
+    // it changed, or a batch landed and filled in a cue already on screen.
+    const key = cue ? `${index}|${persian ?? ''}` : '';
+    if (key !== session.shownKey) {
+      session.shownKey = key;
+      paint(cue, persian);
     }
   }
 
@@ -516,7 +620,7 @@
   const RETRY_DELAYS = [1200, 2000, 3000, 5000, 8000, 12000, 20000];
 
   async function startSession(videoId) {
-    session = { videoId, cues: [], batches: [], shownCue: null, shownText: null };
+    session = { videoId, cues: [], batches: [], shownKey: null };
     const mine = session;
 
     injectFontFace();
@@ -621,8 +725,9 @@
       currentVideoId = null;
       endSession();
       sync();
-    } else if (session?.shownCue) {
-      paint(session.shownCue);
+    } else if (session) {
+      // Force the next tick to repaint with the new settings.
+      session.shownKey = null;
     }
   });
 
