@@ -201,7 +201,9 @@
     return port;
   }
 
-  function sendToBackground(message, timeout = 60000) {
+  // Longer than the background's own retry budget, so its specific error wins
+  // over a bare "no reply" whenever it has one to give.
+  function sendToBackground(message, timeout = 90000) {
     const channel = connect();
     if (!channel) {
       return Promise.resolve({ ok: false, error: ORPHANED, orphaned: true });

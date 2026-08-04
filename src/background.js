@@ -7,7 +7,12 @@
  */
 
 const API_BASE = 'https://openrouter.ai/api/v1';
-const MAX_CONCURRENT = 2;
+const MAX_CONCURRENT = 3;
+// Per attempt. Three attempts plus backoff stays inside the content script's
+// 90s wait, so a batch always gets a real answer rather than a bare timeout.
+const REQUEST_TIMEOUT = 25000;
+// Hard ceiling on how long any single task may hold a concurrency slot.
+const SLOT_BUDGET = 80000;
 const CACHE_LIMIT = 400;
 const RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
@@ -147,13 +152,30 @@ function withSlot(task) {
   return new Promise((resolve) => {
     const run = async () => {
       active++;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        active--;
+        queue.shift()?.();
+      };
+
+      // Belt and braces: a task that never settles would hold its slot for
+      // good, and once every slot is held nothing else can ever run. The
+      // deadline on the fetch itself should prevent that; this makes sure a
+      // future stall somewhere else cannot jam the whole queue again.
+      const watchdog = setTimeout(() => {
+        resolve({ ok: false, error: 'درخواست بیش از حد طول کشید.' });
+        release();
+      }, SLOT_BUDGET);
+
       try {
         resolve(await task());
       } catch (err) {
         resolve({ ok: false, error: String(err?.message || err) });
       } finally {
-        active--;
-        queue.shift()?.();
+        clearTimeout(watchdog);
+        release();
       }
     };
     if (active < MAX_CONCURRENT) run();
@@ -254,7 +276,17 @@ async function callOpenRouter(apiKey, model, payloadLines, context) {
       await new Promise((r) => setTimeout(r, 700 * 2 ** (attempt - 1)));
     }
 
+    /*
+     * A fetch with no deadline can hang indefinitely, and because this runs
+     * inside a concurrency slot a hung request never releases it. Two of those
+     * and every later batch queues behind them forever — which surfaces as the
+     * content script timing out with no error at all.
+     */
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), REQUEST_TIMEOUT);
+
     let res;
+    let payload = '';
     try {
       res = await fetch(`${API_BASE}/chat/completions`, {
         method: 'POST',
@@ -264,26 +296,40 @@ async function callOpenRouter(apiKey, model, payloadLines, context) {
           'X-Title': 'Persian Subtitles for YouTube',
         },
         body: JSON.stringify(body),
+        signal: abort.signal,
       });
+      // Read the body under the same deadline; it can stall just as easily.
+      payload = await res.text();
     } catch (err) {
-      lastError = `Network error: ${err.message}`;
+      lastError =
+        err?.name === 'AbortError'
+          ? `مدل در ${REQUEST_TIMEOUT / 1000} ثانیه پاسخ نداد.`
+          : `Network error: ${err.message}`;
       continue;
+    } finally {
+      clearTimeout(deadline);
     }
 
     if (!res.ok) {
-      const detail = await res.text().catch(() => '');
       if (res.status === 401) {
         return { ok: false, error: 'کلید API نامعتبر است.' };
       }
       if (res.status === 402) {
         return { ok: false, error: 'اعتبار OpenRouter کافی نیست.' };
       }
-      lastError = `OpenRouter ${res.status}: ${detail.slice(0, 160)}`;
+      lastError = `OpenRouter ${res.status}: ${payload.slice(0, 160)}`;
       if (!RETRY_STATUSES.has(res.status)) break;
       continue;
     }
 
-    const data = await res.json().catch(() => null);
+    let data = null;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      lastError = 'Malformed response from OpenRouter.';
+      continue;
+    }
+
     const content = data?.choices?.[0]?.message?.content;
     if (!content) {
       lastError = 'Empty response from the model.';
