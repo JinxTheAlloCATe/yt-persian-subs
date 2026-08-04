@@ -120,9 +120,14 @@
   async function resolveCaptions(player) {
     const tracklist = await captionTracklist(player);
     const track = preferredTrack(tracklist);
-    if (!track) return { url: capturedUrl, track: null };
 
-    // Drop any URL from a previous video so we wait for this one's request.
+    // If captions are already on screen the player has fetched a track for us,
+    // so this URL is good even when the tracklist comes back empty.
+    const already = capturedUrl;
+    if (!track) return { url: already, track: null, tracklist };
+
+    // Clear it so nextCaptionUrl waits for *this* video's request rather than
+    // returning a URL left over from the previous one.
     capturedUrl = null;
     let url = null;
     try {
@@ -136,7 +141,7 @@
     } catch {
       /* leaving native captions on is survivable */
     }
-    return { url: url || capturedUrl, track };
+    return { url: url || capturedUrl || already, track, tracklist };
   }
 
   window.addEventListener('message', async (event) => {
@@ -152,21 +157,37 @@
 
     const player = document.getElementById('movie_player');
     const response = playerResponse(player);
-    const videoId = response?.videoDetails?.videoId || null;
-    const available =
+    const videoId =
+      response?.videoDetails?.videoId ||
+      new URLSearchParams(location.search).get('v');
+    // Only a hint: this list is empty on plenty of videos that do have tracks,
+    // so it must never be the thing that decides there are no subtitles.
+    const listed =
       response?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
 
-    if (!player || !available.length) {
-      reply({ videoId, url: null, sourceLang: null, hasCaptions: false });
+    if (!player) {
+      reply({
+        videoId,
+        url: capturedUrl,
+        sourceLang: null,
+        hasCaptions: Boolean(capturedUrl),
+        diag: { player: false, listed: listed.length, tracklist: 0 },
+      });
       return;
     }
 
-    const { url, track } = await resolveCaptions(player);
+    const { url, track, tracklist } = await resolveCaptions(player);
     reply({
       videoId,
       url,
       sourceLang: track?.languageCode || null,
-      hasCaptions: true,
+      hasCaptions: Boolean(url) || tracklist.length > 0 || listed.length > 0,
+      diag: {
+        player: true,
+        listed: listed.length,
+        tracklist: tracklist.length,
+        captured: Boolean(url),
+      },
     });
   });
 

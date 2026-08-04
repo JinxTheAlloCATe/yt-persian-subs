@@ -210,10 +210,19 @@
   async function loadCaptions(videoId) {
     const info = await askPage('REQ_CAPTIONS');
     if (!info) return { error: 'The player did not respond.' };
-    if (!info.hasCaptions) return { error: 'This video has no subtitles.' };
-    if (!info.url) return { error: 'Could not read the subtitle track.' };
+    log('caption probe', info.diag, info.url ? 'got url' : 'no url');
+
     if (info.videoId && info.videoId !== videoId) {
       return { error: 'Video changed while loading.' };
+    }
+    // A usable URL is the only thing that actually matters; the track lists are
+    // unreliable and must not veto a URL we already hold.
+    if (!info.url) {
+      return {
+        error: info.hasCaptions
+          ? 'Could not read the subtitle track.'
+          : 'This video has no subtitles.',
+      };
     }
 
     let payload;
